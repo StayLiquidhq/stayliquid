@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
 
                 try {
                     // Call your user creation/fetch API
-                    const userResponse = await fetch(`${origin}/api/users/create`, {
+                    const userResponse = await fetch(`${origin}/api/user/create`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',

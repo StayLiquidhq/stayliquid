@@ -16,7 +16,7 @@ export default function Home() {
 
   async function handleGet() {
     
-    fetch('/api/users/fetch')
+    fetch('/api/user/fetch')
       .then(res => res.json())
       .then(data => {
         console.log('Fetched user data:', data)
@@ -31,7 +31,7 @@ export default function Home() {
       return
     }
 
-    const res = await fetch('/api/users/update', {
+    const res = await fetch('/api/user/update', {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json'
