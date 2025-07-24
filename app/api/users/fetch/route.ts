@@ -1,85 +1,74 @@
-import { NextRequest, NextResponse } from "next/server";
-import supabase from "@/utils/supabase";
+import { createServerClient } from '@supabase/ssr'
+import { NextRequest, NextResponse } from 'next/server'
 
 export async function GET(request: NextRequest) {
-    try {
-        const { searchParams } = new URL(request.url);
-        const google_id = searchParams.get('google_id');
+  try {
+    // Prepare response to manage cookies
+    const response = NextResponse.next()
 
-        // Validate required parameter
-        if (!google_id) {
-            return NextResponse.json(
-                {
-                    data: null,
-                    error: "google_id parameter is required",
-                    status: 400
-                },
-                { status: 400 }
-            );
-        }
+    const supabase = createServerClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name) {
+            return request.cookies.get(name)?.value
+          },
+          set(name, value, options) {
+            response.cookies.set(name, value, options)
+          },
+          remove(name, options) {
+            response.cookies.set(name, '', { ...options, maxAge: -1 })
+          },
+        },
+      }
+    )
 
-        // Query user from database
-        const { data, error } = await supabase
-            .from('users')
-            .select('username, picture, is_verified, wallet_address, name, email')
-            .eq('google_id', google_id)
-            .single();
+    // Get the currently authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
 
-        // Handle database errors
-        if (error) {
-            console.error('Database error:', error);
-            
-            // Handle specific "no rows returned" error
-            if (error.code === 'PGRST116') {
-                return NextResponse.json(
-                    {
-                        data: null,
-                        error: "User not found",
-                        status: 404
-                    },
-                    { status: 404 }
-                );
-            }
-
-            // Handle other database errors
-            return NextResponse.json(
-                {
-                    data: null,
-                    error: "Internal server error",
-                    status: 500
-                },
-                { status: 500 }
-            );
-        }
-
-        // Return successful response
-        const { username, picture, is_verified, wallet_address, name, email } = data;
-
-        return NextResponse.json(
-            {
-                data: {
-                    username,
-                    picture,
-                    is_verified,
-                    wallet_address,
-                    name,
-                    email
-                },
-                error: null,
-                status: 200
-            },
-            { status: 200 }
-        );
-
-    } catch (error) {
-        console.error('Unexpected error:', error);
-        return NextResponse.json(
-            {
-                data: null,
-                error: "Internal server error",
-                status: 500
-            },
-            { status: 500 }
-        );
+    if (authError || !user) {
+      return NextResponse.json(
+        { data: null, error: "Unauthorized", status: 401 },
+        { status: 401 }
+      )
     }
+
+    // Use the Supabase user ID (or google_id if that's how you're storing it)
+    const google_id = user.id
+
+    // Fetch the user's profile from your own 'users' table
+    const { data, error } = await supabase
+      .from('users')
+      .select('username, picture, is_verified, wallet_address, name, email')
+      .eq('google_id', google_id) // or 'user_id' if that's your column
+      .single()
+
+    if (error) {
+      console.error('DB error:', error)
+      if (error.code === 'PGRST116') {
+        return NextResponse.json(
+          { data: null, error: "User not found", status: 404 },
+          { status: 404 }
+        )
+      }
+
+      return NextResponse.json(
+        { data: null, error: "Internal server error", status: 500 },
+        { status: 500 }
+      )
+    }
+
+    return NextResponse.json(
+      { data, error: null, status: 200 },
+      { status: 200 }
+    )
+
+  } catch (error) {
+    console.error('Unexpected error:', error)
+    return NextResponse.json(
+      { data: null, error: "Internal server error", status: 500 },
+      { status: 500 }
+    )
+  }
 }
