@@ -1,4 +1,4 @@
-import { createServerClient } from '@supabase/ssr'
+import createSupabaseServerClient from '@/lib/supabase/serverClient'
 import { NextRequest, NextResponse } from 'next/server'
 
 export async function PATCH(request: NextRequest) {
@@ -12,23 +12,7 @@ export async function PATCH(request: NextRequest) {
         const response = NextResponse.next()
 
         // Initialize Supabase server client with cookie methods
-        const supabase = createServerClient(
-            process.env.SUPABASE_URL,
-            process.env.SUPABASE_ANON_KEY,
-            {
-                cookies: {
-                    get(name) {
-                        return request.cookies.get(name)?.value
-                    },
-                    set(name, value, options) {
-                        response.cookies.set(name, value, options)
-                    },
-                    remove(name, options) {
-                        response.cookies.set(name, '', { ...options, maxAge: -1 })
-                    },
-                },
-            }
-        )
+        const supabase = createSupabaseServerClient(request, response)
 
         // Get the currently logged-in Supabase user
         const { data: { user }, error: userError } = await supabase.auth.getUser()
