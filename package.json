@@ -9,9 +9,10 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@privy-io/server-auth": "^1.28.7",
+    "@privy-io/server-auth": "^1.32.2",
     "@supabase/ssr": "^0.6.1",
     "@supabase/supabase-js": "^2.52.0",
+    "crypto": "^1.0.1",
     "next": "15.4.2",
     "react": "19.1.0",
     "react-dom": "19.1.0"

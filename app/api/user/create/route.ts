@@ -1,120 +1,121 @@
 import { NextRequest, NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
-import privy from "@/utils/privy";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: corsHeaders });
+}
 
 export async function POST(request: NextRequest) {
-    try {
-        const body = await request.json();
-        const { email, name, picture, google_id } = body;
-
-        // Validate required fields
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!email || !emailRegex.test(email)) {
-            return NextResponse.json({
-                error: "Valid email address is required",
-                data: null,
-                new: false,
-                status: 400
-            });
-        }
-
-        const cleanEmail = email.toLowerCase().trim();
-        const username = cleanEmail.split("@")[0];
-
-        // Try to find existing user first
-        const { data: existingUser, error: fetchError } = await supabase
-            .from('users')
-            .select('*')
-            .eq('email', cleanEmail)
-            .single();
-
-        // If user exists, return them
-        if (existingUser && !fetchError) {
-            // Optionally update their info (like profile picture) if it's changed
-            const { data: updatedUser, error: updateError } = await supabase
-                .from('users')
-                .update({
-                    name: name.trim(),
-                    picture: picture || existingUser.picture
-                })
-                .eq('id', existingUser.id)
-                .select()
-                .single();
-
-            if (updateError) {
-                console.error('Error updating existing user:', updateError);
-                // Still return the existing user even if update fails
-                return NextResponse.json({
-                    error: null,
-                    data: existingUser,
-                    new: false,
-                    status: 200
-                });
-            }
-
-            return NextResponse.json({
-                error: null,
-                data: updatedUser,
-                new: false,
-                status: 200
-            });
-        }
-
-        // If user doesn't exist (and it's not a different error), create new user
-        if (fetchError && fetchError.code === 'PGRST116') {
-
-            const {id, address} = await privy.walletApi.createWallet({chainType: 'solana'});
-
-            const { data: newUser, error: insertError } = await supabase
-                .from('users')
-                .insert([
-                    {
-                        email: cleanEmail,
-                        privy_id: id,
-                        name: name.trim(),
-                        wallet_address: address,
-                        username: username.toLowerCase(),
-                        picture: picture || null,
-                        google_id: google_id || null
-                    }
-                ])
-                .select()
-                .single();
-
-            if (insertError) {
-                console.error('Error creating new user:', insertError);
-                return NextResponse.json({
-                    error: "Failed to create user account",
-                    data: null,
-                    new: false,
-                    status: 500
-                });
-            }
-
-            return NextResponse.json({
-                error: null,
-                data: newUser,
-                new: true,
-                status: 200
-            });
-        }
-
-        // If there was a different database error
-        console.error('Database error:', fetchError);
-        return NextResponse.json({
-            error: "Database error occurred",
-            data: null,
-            new: false,
-            status: 500
-        });
-
-    } catch (error) {
-        console.error('Unexpected error:', error);
-        return NextResponse.json({
-            error: "Internal server error",
-            data: null,
-            new: false,
-            status: 500
-        });
+  try {
+    // 1. Extract Bearer token
+    const authHeader = request.headers.get("authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return NextResponse.json(
+        { error: "Unauthorized: Missing or invalid Authorization header" },
+        { status: 401, headers: corsHeaders }
+      );
     }
+    const token = authHeader.split(" ")[1].trim();
+
+    // 2. Verify token and get authenticated user
+    const { data: { user: authUser }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !authUser) {
+      return NextResponse.json(
+        { error: "Unauthorized: Invalid or expired token" },
+        { status: 401, headers: corsHeaders }
+      );
+    }
+
+    // 3. Extract metadata from the authenticated user
+    const full_name = authUser.user_metadata?.full_name || "Anonymous";
+    const email = authUser.email?.toLowerCase().trim();
+    const avatar_url = authUser.user_metadata?.avatar_url || null;
+
+    if (!email) {
+      return NextResponse.json(
+        { error: "Email is missing in the token payload" },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+
+    // 4. Check if a user profile already exists
+    const { data: existingUser, error: fetchError } = await supabase
+      .from("users")
+      .select("*")
+      .eq("auth_user_id", authUser.id)
+      .single();
+
+    // If user exists, update if necessary
+    if (existingUser && !fetchError) {
+      const needsUpdate =
+        existingUser.full_name !== full_name ||
+        existingUser.avatar_url !== avatar_url;
+
+      if (needsUpdate) {
+        const { data: updatedUser, error: updateError } = await supabase
+          .from("users")
+          .update({
+            full_name,
+            avatar_url,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("auth_user_id", authUser.id)
+          .select()
+          .single();
+
+        if (updateError) {
+          console.error("Error updating user profile:", updateError);
+          return NextResponse.json(
+            { error: "Failed to update user profile" },
+            { status: 500, headers: corsHeaders }
+          );
+        }
+        return NextResponse.json({ data: updatedUser, new: false }, { status: 200, headers: corsHeaders });
+      }
+      return NextResponse.json({ data: existingUser, new: false }, { status: 200, headers: corsHeaders });
+    }
+
+    // 5. If user does not exist, create a new profile
+    if (fetchError && fetchError.code === "PGRST116") {
+      const { data: newUser, error: insertError } = await supabase
+        .from("users")
+        .insert({
+          auth_user_id: authUser.id,
+          full_name,
+          email,
+          avatar_url,
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error("Error creating user profile:", insertError);
+        return NextResponse.json(
+          { error: "Failed to create user profile" },
+          { status: 500, headers: corsHeaders }
+        );
+      }
+      return NextResponse.json({ data: newUser, new: true }, { status: 201, headers: corsHeaders });
+    }
+
+    // Handle other database errors
+    console.error("Database error:", fetchError);
+    return NextResponse.json(
+      { error: "A database error occurred" },
+      { status: 500, headers: corsHeaders }
+    );
+
+  } catch (error) {
+    console.error("Unexpected error:", error);
+    return NextResponse.json(
+      { error: "An internal server error occurred" },
+      { status: 500, headers: corsHeaders }
+    );
+  }
 }
