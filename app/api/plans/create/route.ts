@@ -25,18 +25,21 @@ const planSchema = z.union([
     frequency: z.string().min(1),
     payout_time: z.string().min(1),
   }),
-  z.object({
-    plan_type: z.literal("target"),
-    target_type: z.enum(["amount", "date"]),
-    target_amount: z.number().positive().optional(),
-    target_date: z.string().optional(),
-  }).refine(
-    (d) => (d.target_type === "amount" ? d.target_amount != null : true),
-    { message: "Target amount required", path: ["target_amount"] }
-  ).refine(
-    (d) => (d.target_type === "date" ? d.target_date != null : true),
-    { message: "Target date required", path: ["target_date"] }
-  ),
+  z
+    .object({
+      plan_type: z.literal("target"),
+      target_type: z.enum(["amount", "date"]),
+      target_amount: z.number().positive().optional(),
+      target_date: z.string().optional(),
+    })
+    .refine(
+      (d) => (d.target_type === "amount" ? d.target_amount != null : true),
+      { message: "Target amount required", path: ["target_amount"] }
+    )
+    .refine((d) => (d.target_type === "date" ? d.target_date != null : true), {
+      message: "Target date required",
+      path: ["target_date"],
+    }),
 ]);
 
 const createPlanSchema = z.intersection(planSchema, payoutSchema);
@@ -48,7 +51,10 @@ export async function POST(request: NextRequest) {
 
   try {
     // 1. Authenticate user
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
     if (authError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -69,7 +75,10 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const validation = createPlanSchema.safeParse(body);
     if (!validation.success) {
-      return NextResponse.json({ error: validation.error.format() }, { status: 400 });
+      return NextResponse.json(
+        { error: validation.error.format() },
+        { status: 400 }
+      );
     }
     const validatedData = validation.data;
 
@@ -85,7 +94,10 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (planError) {
-      return NextResponse.json({ error: "Failed to create plan" }, { status: 500 });
+      return NextResponse.json(
+        { error: "Failed to create plan" },
+        { status: 500 }
+      );
     }
 
     // 5. Create wallet via Privy
@@ -104,7 +116,10 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (walletError) {
-      return NextResponse.json({ error: "Plan created but wallet failed" }, { status: 500 });
+      return NextResponse.json(
+        { error: "Plan created but wallet failed" },
+        { status: 500 }
+      );
     }
 
     // 7. Return response
@@ -112,9 +127,11 @@ export async function POST(request: NextRequest) {
       { plan: newPlan, wallet: newWallet },
       { status: 201 }
     );
-
   } catch (err) {
     console.error("Unexpected error:", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
   }
 }
