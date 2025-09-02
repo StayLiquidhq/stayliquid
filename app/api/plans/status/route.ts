@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
       .from("plans")
       .select("id")
       .eq("user_id", userId)
-      .maybeSingle(); // ✅ avoids throwing error if no plan exists
+      .maybeSingle(); 
 
     if (planError) {
       console.error("Error fetching plan:", planError);
