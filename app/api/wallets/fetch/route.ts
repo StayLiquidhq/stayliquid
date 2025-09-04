@@ -8,6 +8,9 @@ interface Wallet {
   address: string;
   created_at: string;
   name?: string;
+  plans: {
+    plan_type: string;
+  }[];
 }
 
 const corsHeaders = {
@@ -92,13 +95,19 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // 3. Fetch user's wallets using the get_wallets_for_user function
-    const { data: wallets, error: walletsError } = await supabase.rpc(
-      "get_wallets_for_user",
-      {
-        p_user_id: user.id,
-      }
-    );
+    // 3. Fetch user's wallets and associated plan types
+    const { data: wallets, error: walletsError } = await supabase
+      .from('plans')
+      .select(`
+        plan_type,
+        wallets (
+          id,
+          privy_id,
+          address,
+          created_at
+        )
+      `)
+      .eq('user_id', user.id);
 
     if (walletsError) {
       console.error("Error fetching wallets:", walletsError);
@@ -115,21 +124,23 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Failed to fetch USDC price" }, { status: 500, headers: corsHeaders });
     }
 
-    // 6. Fetch balance for each wallet using Helius API
-    const walletDetailsPromises = (wallets as Wallet[]).map(async (wallet, index) => {
-      const balanceData = await fetchSolanaUsdcBalance(wallet.address, usdcPrice);
-      
-      return {
-        wallet_id: wallet.id,
-        name: `Vault ${index + 1}`,
-        user_id: user.id,
-        address: wallet.address,
-        balance: balanceData.display_value,
-        usd_value: balanceData.usd_value,
-        currency: 'USDC',
-        created_at: wallet.created_at,
-      };
-    });
+    // 6. Process wallets and fetch balances
+    const walletDetailsPromises = wallets?.flatMap((plan: any, planIndex: number) => 
+      plan.wallets.map(async (wallet: any, walletIndex: number) => {
+        const balanceData = await fetchSolanaUsdcBalance(wallet.address, usdcPrice);
+        return {
+          wallet_id: wallet.id,
+          name: `vault ${planIndex * plan.wallets.length + walletIndex + 1}`,
+          user_id: user.id,
+          address: wallet.address,
+          balance: balanceData.display_value,
+          usd_value: balanceData.usd_value,
+          currency: 'USDC',
+          created_at: wallet.created_at,
+          plan_type: plan.plan_type,
+        };
+      })
+    ) || [];
 
     const walletDetails = await Promise.all(walletDetailsPromises);
 
