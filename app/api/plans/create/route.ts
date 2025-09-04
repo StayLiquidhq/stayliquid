@@ -1,7 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import createSupabaseServerClient from "@/lib/supabase/serverClient";
+import supabase from "@/utils/supabase";
 import { z } from "zod";
 import { createWallet } from "../../../../lib/CreateWallet";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: corsHeaders });
+}
+
+
 
 // --- Zod Validation ---
 const payoutSchema = z.union([
@@ -46,30 +58,28 @@ const createPlanSchema = z.intersection(planSchema, payoutSchema);
 
 // --- Endpoint ---
 export async function POST(request: NextRequest) {
-  const response = NextResponse.next();
-  const supabase = createSupabaseServerClient(request, response);
-
   try {
-    // 1. Authenticate user
+    // 1. Extract and validate the Bearer token from the header
+    const authHeader = request.headers.get("authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return NextResponse.json(
+        { error: "Unauthorized: Missing or invalid Authorization header" },
+        { status: 401, headers: corsHeaders }
+      );
+    }
+    const token = authHeader.split(" ")[1];
+
+    // 2. Verify the token and retrieve the authenticated user
     const {
       data: { user },
       error: authError,
-    } = await supabase.auth.getUser();
+    } = await supabase.auth.getUser(token);
     if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Unauthorized: Invalid or expired token" },
+        { status: 401, headers: corsHeaders }
+      );
     }
-
-    // 2. Get internal user_id
-    const { data: userData } = await supabase
-      .from("users")
-      .select("id")
-      .eq("user_id", user.id)
-      .single();
-
-    if (!userData) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-    const internalUserId = userData.id;
 
     // 3. Validate body
     const body = await request.json();
@@ -77,7 +87,7 @@ export async function POST(request: NextRequest) {
     if (!validation.success) {
       return NextResponse.json(
         { error: validation.error.format() },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
     const validatedData = validation.data;
@@ -86,9 +96,8 @@ export async function POST(request: NextRequest) {
     const { data: newPlan, error: planError } = await supabase
       .from("plans")
       .insert({
-        user_id: internalUserId,
-        plan_type: validatedData.plan_type,
-        details: validatedData,
+        user_id: user.id,
+        ...validatedData,
       })
       .select()
       .single();
@@ -96,8 +105,35 @@ export async function POST(request: NextRequest) {
     if (planError) {
       return NextResponse.json(
         { error: "Failed to create plan" },
-        { status: 500 }
+        { status: 500, headers: corsHeaders }
       );
+    }
+
+    // Check and update has_created_plan status
+    const { data: userProfile, error: profileError } = await supabase
+      .from("users")
+      .select("has_created_plan")
+      .eq("auth_user_id", user.id)
+      .single();
+
+    // Log profile fetch error but don't block
+    if (profileError) {
+      console.error("Error fetching user profile:", profileError.message);
+    }
+
+    if (userProfile && !userProfile.has_created_plan) {
+      const { error: updateUserError } = await supabase
+        .from("users")
+        .update({ has_created_plan: true })
+        .eq("auth_user_id", user.id);
+
+      // Log update error but don't block
+      if (updateUserError) {
+        console.error(
+          "Failed to update has_created_plan:",
+          updateUserError.message
+        );
+      }
     }
 
     // 5. Create wallet via Privy
@@ -118,20 +154,20 @@ export async function POST(request: NextRequest) {
     if (walletError) {
       return NextResponse.json(
         { error: "Plan created but wallet failed" },
-        { status: 500 }
+        { status: 500, headers: corsHeaders }
       );
     }
 
     // 7. Return response
     return NextResponse.json(
       { plan: newPlan, wallet: newWallet },
-      { status: 201 }
+      { status: 201, headers: corsHeaders }
     );
   } catch (err) {
     console.error("Unexpected error:", err);
     return NextResponse.json(
       { error: "Internal server error" },
-      { status: 500 }
+      { status: 500, headers: corsHeaders }
     );
   }
 }
