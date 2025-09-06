@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
 import { z } from "zod";
 import { createWallet } from "../../../../lib/CreateWallet";
+import { updateWebhookWithNewAddress } from "../../../../lib/update_webhook";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -158,7 +159,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 7. Return response
+    // 7. Update the webhook with the new wallet address
+    // This is done asynchronously and does not block the response
+    updateWebhookWithNewAddress(newWallet.address);
+
+    // 8. Return response
     return NextResponse.json(
       { plan: newPlan, wallet: newWallet },
       { status: 201, headers: corsHeaders }
