@@ -13,6 +13,7 @@
     "@supabase/ssr": "^0.6.1",
     "@supabase/supabase-js": "^2.52.0",
     "crypto": "^1.0.1",
+    "helius-sdk": "^1.5.3",
     "next": "15.4.2",
     "react": "19.1.0",
     "react-dom": "19.1.0"
