@@ -10,6 +10,7 @@ interface Wallet {
   name?: string;
   plans: {
     plan_type: string;
+    id: string;
   }[];
 }
 
@@ -52,6 +53,7 @@ export async function GET(request: NextRequest) {
     const { data: plans, error: plansError } = await supabase
       .from('plans')
       .select(`
+        id,
         plan_type,
         wallets (
           id,
@@ -93,6 +95,7 @@ export async function GET(request: NextRequest) {
           currency: 'USDC',
           created_at: wallet.created_at,
           plan_type: plan.plan_type,
+          plan_id: plan.id,
         };
       })
     ) || [];

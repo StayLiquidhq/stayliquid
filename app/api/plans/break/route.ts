@@ -42,12 +42,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing plan_id" }, { status: 400, headers: corsHeaders });
     }
 
-    // 3. Fetch plan and wallet details
+    // 3. Fetch plan details to get the payout address and wallet ID
     const { data: plan, error: planError } = await supabase
       .from("plans")
       .select(`
         payout_wallet_address,
-        wallets (id, balance)
+        wallets (id)
       `)
       .eq("id", plan_id)
       .eq("user_id", user.id)
@@ -57,23 +57,32 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Plan or wallet not found" }, { status: 404, headers: corsHeaders });
     }
 
-    const wallet = plan.wallets[0];
-    const { id: walletId, balance } = wallet;
+    const walletId = plan.wallets[0].id;
     const recipientAddress = plan.payout_wallet_address;
-    const totalAmount = Number(balance);
 
     if (!recipientAddress) {
       return NextResponse.json({ error: "Payout wallet address not set" }, { status: 400, headers: corsHeaders });
     }
+
+    // 4. Atomically fetch and reset the user's balance
+    const { data: totalAmount, error: rpcError } = await supabase.rpc(
+      "reset_wallet_balance",
+      { p_wallet_id: walletId }
+    );
+
+    if (rpcError || totalAmount === null) {
+      return NextResponse.json({ error: "Failed to fetch or reset balance" }, { status: 500, headers: corsHeaders });
+    }
+    
     if (totalAmount <= 0) {
       return NextResponse.json({ error: "No balance to break" }, { status: 400, headers: corsHeaders });
     }
 
-    // 4. Calculate fees and payout
+    // 5. Calculate fees and payout
     const feeAmount = totalAmount * 0.02;
     const payoutAmount = totalAmount - feeAmount;
 
-    // 5. Environment variables and keypairs
+    // 6. Environment variables and keypairs
     const payoutPrivateKey = process.env.PAYOUT_PRIVATE_KEY;
     if (!payoutPrivateKey) {
       return NextResponse.json({ error: "Payout wallet not configured" }, { status: 500, headers: corsHeaders });
@@ -84,11 +93,11 @@ export async function POST(request: NextRequest) {
     const sender = payoutKeypair.publicKey;
     const recipient = new PublicKey(recipientAddress);
 
-    // 6. Get associated token accounts
+    // 7. Get associated token accounts
     const senderTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, sender);
     const recipientTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, recipient);
 
-    // 7. Build the transaction
+    // 8. Build the transaction
     const tx = new Transaction();
     const recipientInfo = await connection.getAccountInfo(recipientTokenAccount);
     if (!recipientInfo) {
@@ -105,19 +114,9 @@ export async function POST(request: NextRequest) {
     tx.feePayer = sender;
     tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
-    // 8. Sign and send the transaction
+    // 9. Sign and send the transaction
     const signature = await connection.sendTransaction(tx, [payoutKeypair]);
     await connection.confirmTransaction(signature, "confirmed");
-
-    // 9. Update wallet balance in the database
-    const { error: updateError } = await supabase
-      .from("wallets")
-      .update({ balance: 0, balance_updated_at: new Date().toISOString() })
-      .eq("id", walletId);
-
-    if (updateError) {
-      console.error("Failed to update wallet balance:", updateError);
-    }
 
     return NextResponse.json({ success: true, signature }, { headers: corsHeaders });
 
