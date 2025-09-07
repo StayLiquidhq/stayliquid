@@ -30,12 +30,14 @@ export async function POST(request: NextRequest) {
     const authToken = process.env.PAYOUT_AUTH_TOKEN;
 
     if (!authToken || authHeader !== `Bearer ${authToken}`) {
+      console.error("Unauthorized access attempt to payout endpoint.");
       return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
     }
 
     // 2. Get plan_id from the request body
     const { plan_id } = await request.json();
     if (!plan_id) {
+      console.error("Payout endpoint called without a plan_id.");
       return NextResponse.json({ error: "Missing plan_id" }, { status: 400, headers: corsHeaders });
     }
 
@@ -52,6 +54,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (planError || !plan || !plan.wallets || !Array.isArray(plan.wallets) || plan.wallets.length === 0) {
+      console.error(`Failed to fetch plan or wallet for plan_id: ${plan_id}. Error:`, planError?.message);
       return NextResponse.json({ error: "Plan or wallet not found" }, { status: 404, headers: corsHeaders });
     }
 
@@ -60,20 +63,24 @@ export async function POST(request: NextRequest) {
     const payoutAmount = plan.recurrent_payout;
 
     if (!recipientAddress) {
+      console.error(`Plan ${plan_id} is missing a payout_wallet_address.`);
       return NextResponse.json({ error: "Payout wallet address not set for this plan" }, { status: 400, headers: corsHeaders });
     }
     
     if (payoutAmount <= 0) {
+        console.error(`Plan ${plan_id} has a recurrent_payout of ${payoutAmount}, which is not valid.`);
         return NextResponse.json({ error: "No recurrent payout amount set for this plan" }, { status: 400, headers: corsHeaders });
     }
 
     if (wallet.balance < payoutAmount) {
+      console.error(`Plan ${plan_id} has insufficient balance. Wallet Balance: ${wallet.balance}, Payout Amount: ${payoutAmount}`);
       return NextResponse.json({ error: "Insufficient balance for payout" }, { status: 400, headers: corsHeaders });
     }
 
     // 4. Environment variables and keypairs for the transaction
     const payoutPrivateKey = process.env.PAYOUT_PRIVATE_KEY;
     if (!payoutPrivateKey) {
+      console.error("CRITICAL: PAYOUT_PRIVATE_KEY environment variable is not set.");
       return NextResponse.json({ error: "Payout wallet not configured on server" }, { status: 500, headers: corsHeaders });
     }
 
