@@ -93,12 +93,44 @@ export async function POST(request: NextRequest) {
     }
     const validatedData = validation.data;
 
-    // 4. Insert plan
+    // 4. Calculate the first payout date for recurring plans
+    let next_payout_date = null;
+    if ('frequency' in validatedData && 'payout_time' in validatedData) {
+        const { frequency, payout_time } = validatedData;
+        const now = new Date();
+        const [hours, minutes] = payout_time.split(':');
+        
+        // Set the time for today
+        now.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+
+        // Calculate the next date based on frequency
+        switch (frequency.toLowerCase()) {
+            case 'daily':
+                // If the time is already past for today, schedule for tomorrow
+                if (now < new Date()) {
+                    now.setDate(now.getDate() + 1);
+                }
+                break;
+            case 'weekly':
+                now.setDate(now.getDate() + 7);
+                break;
+            case 'monthly':
+                now.setMonth(now.getMonth() + 1);
+                break;
+            default:
+                // Handle other frequencies or throw an error
+                break;
+        }
+        next_payout_date = now.toISOString();
+    }
+
+    // 5. Insert plan
     const { data: newPlan, error: planError } = await supabase
       .from("plans")
       .insert({
         user_id: user.id,
         ...validatedData,
+        next_payout_date: next_payout_date,
       })
       .select()
       .single();
