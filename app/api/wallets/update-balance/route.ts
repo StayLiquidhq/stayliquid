@@ -4,6 +4,7 @@ import { sweepFunds } from "../../../../lib/sweep";
 import { logTransaction } from "../../../../lib/transaction_history";
 
 interface TokenTransfer {
+  fromUserAccount: string;
   mint: string;
   toUserAccount: string;
   tokenAmount: number;
@@ -27,9 +28,9 @@ export async function POST(request: NextRequest) {
           );
 
           for (const transfer of usdcTransfers) {
-            const { toUserAccount, tokenAmount } = transfer;
+            const { fromUserAccount, toUserAccount, tokenAmount } = transfer;
             // We only care about funds coming *into* our users' wallets
-            await processIncomingTransfer(toUserAccount, tokenAmount);
+            await processIncomingTransfer(fromUserAccount, toUserAccount, tokenAmount);
           }
         }
       }
@@ -43,45 +44,45 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function processIncomingTransfer(walletAddress: string, amount: number) {
-  if (!walletAddress) return;
+async function processIncomingTransfer(fromAddress: string, toAddress: string, amount: number) {
+  if (!toAddress) return;
 
   try {
     // 1. Find the wallet in our database to get its ID, privy_id, and current balance
     const { data: wallet, error: fetchError } = await supabase
       .from("wallets")
       .select("id, privy_id, balance")
-      .eq("address", walletAddress)
+      .eq("address", toAddress)
       .single();
 
     if (fetchError || !wallet) {
-      console.log(`Wallet not in DB, skipping sweep for: ${walletAddress}`);
+      console.log(`Wallet not in DB, skipping sweep for: ${toAddress}`);
       return;
     }
 
     // 2. Sweep the incoming amount to the dev wallet
-    await sweepFunds(wallet.privy_id, walletAddress, amount);
+    await sweepFunds(wallet.privy_id, toAddress, amount);
 
     // 3. After a successful sweep, update the user's wallet balance in our DB atomically
     const { error: rpcError } = await supabase.rpc("increment_balance", {
-      wallet_address: walletAddress,
+      wallet_address: toAddress,
       amount_to_add: amount,
     });
 
     if (rpcError) {
-      console.error(`Failed to update balance for wallet ${walletAddress}:`, rpcError);
+      console.error(`Failed to update balance for wallet ${toAddress}:`, rpcError);
     } else {
-      console.log(`Successfully swept and updated balance for wallet ${walletAddress}`);
+      console.log(`Successfully swept and updated balance for wallet ${toAddress}`);
       // Log the credit transaction after balance is successfully updated
       await logTransaction({
         wallet_id: wallet.id,
         type: 'credit',
         amount: amount,
         currency: 'USDC',
-        description: `Received from webhook`, // A more specific source could be added if available
+        description: `Received from ${fromAddress}`,
       });
     }
   } catch (error) {
-    console.error(`Error processing transfer for ${walletAddress}:`, error);
+    console.error(`Error processing transfer for ${toAddress}:`, error);
   }
 }
