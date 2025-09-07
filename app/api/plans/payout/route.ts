@@ -29,12 +29,7 @@ export async function POST(request: NextRequest) {
     const authHeader = request.headers.get("authorization");
     const authToken = process.env.PAYOUT_AUTH_TOKEN;
 
-    // Detailed logging for debugging authorization
-    console.log("Received Authorization Header:", authHeader);
-    console.log("Expected Auth Token Snippet:", `Bearer ${authToken ? authToken.substring(0, 5) + '...' : 'NOT SET'}`);
-
     if (!authToken || authHeader !== `Bearer ${authToken}`) {
-      console.error("Authorization failed. Header received does not match expected token.");
       return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
     }
 
