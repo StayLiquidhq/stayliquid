@@ -87,9 +87,22 @@ export async function POST(request: NextRequest) {
     const sender = payoutKeypair.publicKey;
     const recipient = new PublicKey(recipientAddress);
 
-    // 5. Get associated token accounts
+    // 5. Get associated token accounts and check dev wallet balance
     const senderTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, sender);
     const recipientTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, recipient);
+
+    try {
+        const senderTokenAccountInfo = await connection.getTokenAccountBalance(senderTokenAccount);
+        const senderBalance = senderTokenAccountInfo.value.uiAmount;
+        if (senderBalance === null || senderBalance < payoutAmount) {
+            console.error(`Insufficient balance in dev payout wallet. Has: ${senderBalance}, Needs: ${payoutAmount}`);
+            return NextResponse.json({ error: "Insufficient funds in the payout wallet to process this transaction." }, { status: 503, headers: corsHeaders }); // 503 Service Unavailable is appropriate here
+        }
+    } catch (error) {
+        // This can happen if the token account doesn't exist yet.
+        console.error("Could not fetch dev payout wallet balance. It may not have a USDC token account.", error);
+        return NextResponse.json({ error: "Could not verify the payout wallet's balance." }, { status: 500, headers: corsHeaders });
+    }
 
     // 6. Build the transaction
     const tx = new Transaction();
@@ -133,26 +146,18 @@ export async function POST(request: NextRequest) {
             break;
     }
 
-    // Update wallet and plan in a single transaction if possible, or separately.
-    const { error: walletUpdateError } = await supabase
-      .from("wallets")
-      .update({ balance: newBalance })
-      .eq("id", wallet.id);
+    // 9. Atomically update wallet and plan using the database function
+    const { error: rpcError } = await supabase.rpc('process_payout_update', {
+        p_plan_id: plan_id,
+        p_wallet_id: wallet.id,
+        p_new_balance: newBalance,
+        p_last_payout_date: now.toISOString(),
+        p_next_payout_date: next_payout_date ? next_payout_date.toISOString() : null
+    });
 
-    if (walletUpdateError) {
-        console.error(`CRITICAL: Transaction ${signature} succeeded but failed to update wallet balance for plan ${plan_id}. Error: ${walletUpdateError.message}`);
-    }
-
-    const { error: planUpdateError } = await supabase
-        .from("plans")
-        .update({ 
-            last_payout_date: now.toISOString(),
-            next_payout_date: next_payout_date ? next_payout_date.toISOString() : null
-        })
-        .eq("id", plan_id);
-
-    if (planUpdateError) {
-        console.error(`CRITICAL: Failed to update next payout date for plan ${plan_id}. Error: ${planUpdateError.message}`);
+    if (rpcError) {
+        console.error(`CRITICAL: Transaction ${signature} succeeded but the atomic database update failed for plan ${plan_id}. Error: ${rpcError.message}`);
+        // This situation requires manual intervention.
     }
 
     return NextResponse.json({ success: true, signature }, { headers: corsHeaders });
