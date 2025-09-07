@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import supabase from "@/utils/supabase";
-import { sweepFunds } from "@/lib/sweep";
+import supabase from "../../../../utils/supabase";
+import { sweepFunds } from "../../../../lib/sweep";
+import { logTransaction } from "../../../../lib/transaction_history";
 
 interface TokenTransfer {
   mint: string;
@@ -46,10 +47,10 @@ async function processIncomingTransfer(walletAddress: string, amount: number) {
   if (!walletAddress) return;
 
   try {
-    // 1. Find the wallet in our database to get its privy_id and current balance
+    // 1. Find the wallet in our database to get its ID, privy_id, and current balance
     const { data: wallet, error: fetchError } = await supabase
       .from("wallets")
-      .select("privy_id, balance")
+      .select("id, privy_id, balance")
       .eq("address", walletAddress)
       .single();
 
@@ -71,6 +72,14 @@ async function processIncomingTransfer(walletAddress: string, amount: number) {
       console.error(`Failed to update balance for wallet ${walletAddress}:`, rpcError);
     } else {
       console.log(`Successfully swept and updated balance for wallet ${walletAddress}`);
+      // Log the credit transaction after balance is successfully updated
+      await logTransaction({
+        wallet_id: wallet.id,
+        type: 'credit',
+        amount: amount,
+        currency: 'USDC',
+        description: `Received from webhook`, // A more specific source could be added if available
+      });
     }
   } catch (error) {
     console.error(`Error processing transfer for ${walletAddress}:`, error);
