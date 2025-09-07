@@ -9,7 +9,7 @@ import {
 const SOLANA_DEVNET = "https://api.devnet.solana.com";
 const USDC_DEVNET_MINT = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
 
-export async function sweepFunds(userPrivyId: string, userWalletAddress: string, amount: number) {
+export async function sweepFunds(userPrivyId: string, userWalletAddress: string) {
   const devPrivateKey = process.env.DEV_WALLET_PRIVATE_KEY;
   const privyAppId = process.env.PRIVY_APP_ID;
   const privyAppSecret = process.env.PRIVY_APP_SECRET;
@@ -26,6 +26,15 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
 
   const senderTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, sender);
   const recipientTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, recipient);
+
+  const balanceResponse = await connection.getTokenAccountBalance(senderTokenAccount);
+  const amount = balanceResponse.value.uiAmount;
+  console.log(`Preparing to sweep ${amount} USDC from ${userWalletAddress} to dev wallet.`);
+
+  if (!amount || amount === 0) {
+    console.log(`No funds to sweep from ${userWalletAddress}.`);
+    return;
+  }
 
   const tx = new Transaction();
 
