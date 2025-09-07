@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
 import { sweepFunds } from "@/lib/sweep";
 
-const USDC_MINT = process.env.USDC_MINT;
+// Using Devnet USDC mint for this example. Change to mainnet if needed.
+const USDC_MINT = process.env.USDC_MINT; // Mainnet USDC mint
 
 export async function POST(request: NextRequest) {
   try {
@@ -39,10 +40,10 @@ async function processIncomingTransfer(walletAddress: string, amount: number) {
   if (!walletAddress) return;
 
   try {
-    // 1. Find the wallet to get its privy_id for the sweep
+    // 1. Find the wallet in our database to get its privy_id and current balance
     const { data: wallet, error: fetchError } = await supabase
       .from("wallets")
-      .select("privy_id")
+      .select("privy_id, balance")
       .eq("address", walletAddress)
       .single();
 
@@ -51,22 +52,19 @@ async function processIncomingTransfer(walletAddress: string, amount: number) {
       return;
     }
 
-    // 2. Sweep the incoming amount
+    // 2. Sweep the incoming amount to the dev wallet
     await sweepFunds(wallet.privy_id, walletAddress, amount);
 
-    // 3. Atomically update the balance in the database
-    const { data: newBalance, error: rpcError } = await supabase.rpc(
-      "increment_wallet_balance",
-      {
-        p_wallet_address: walletAddress,
-        p_amount: amount,
-      }
-    );
+    // 3. After a successful sweep, update the user's wallet balance in our DB atomically
+    const { error: rpcError } = await supabase.rpc("increment_balance", {
+      wallet_address: walletAddress,
+      amount_to_add: amount,
+    });
 
     if (rpcError) {
       console.error(`Failed to update balance for wallet ${walletAddress}:`, rpcError);
     } else {
-      console.log(`Successfully swept and updated balance for wallet ${walletAddress} to ${newBalance}`);
+      console.log(`Successfully swept and updated balance for wallet ${walletAddress}`);
     }
   } catch (error) {
     console.error(`Error processing transfer for ${walletAddress}:`, error);
