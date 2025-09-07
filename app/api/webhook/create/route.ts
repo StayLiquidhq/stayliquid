@@ -1,11 +1,11 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
 import { Helius, WebhookType, TransactionType } from "helius-sdk";
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const WEBHOOK_URL = process.env.WEBHOOK_URL; // Replace with your actual webhook receiving endpoint
 
-export async function POST(request: NextRequest) {
+export async function POST() {
   try {
     if (!HELIUS_API_KEY || !WEBHOOK_URL) {
       return NextResponse.json({ error: "Server configuration missing" }, { status: 500 });
@@ -60,8 +60,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, webhook: newWebhook }, { status: 201 });
 
-  } catch (err: any) {
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : "An unknown error occurred";
     console.error("Error creating webhook:", err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }

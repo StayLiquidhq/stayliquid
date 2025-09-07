@@ -120,12 +120,15 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, signature }, { headers: corsHeaders });
 
-  } catch (err: any) {
+  } catch (err) {
     if (err instanceof SendTransactionError) {
-      const logs = await err.getLogs(new Connection(SOLANA_DEVNET));
-      console.error("Transaction failed logs:", logs);
+      const connection = new Connection(SOLANA_DEVNET);
+      err.getLogs(connection).then(logs => {
+        console.error("Transaction failed logs:", logs);
+      });
     }
+    const errorMessage = err instanceof Error ? err.message : "An unknown error occurred";
     console.error(err);
-    return NextResponse.json({ error: err.message }, { status: 500, headers: corsHeaders });
+    return NextResponse.json({ error: errorMessage }, { status: 500, headers: corsHeaders });
   }
 }

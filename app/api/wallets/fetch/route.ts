@@ -2,16 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
 import { getUsdcPrice } from "@/lib/coingecko";
 
-interface Wallet {
+interface Plan {
+  id: string;
+  plan_type: string;
+  wallets: WalletData[];
+}
+
+interface WalletData {
   id: string;
   privy_id: string;
   address: string;
   created_at: string;
-  name?: string;
-  plans: {
-    plan_type: string;
-    id: string;
-  }[];
+  balance: string | number;
 }
 
 const corsHeaders = {
@@ -81,8 +83,8 @@ export async function GET(request: NextRequest) {
     }
 
     // 6. Process wallets and calculate USD value
-    const walletDetails = plans?.flatMap((plan: any, planIndex: number) => 
-      plan.wallets.map((wallet: any, walletIndex: number) => {
+    const walletDetails = plans?.flatMap((plan: Plan, planIndex: number) => 
+      plan.wallets.map((wallet: WalletData, walletIndex: number) => {
         const balance = Number(wallet.balance) || 0;
         const usdValue = balance * usdcPrice;
         return {

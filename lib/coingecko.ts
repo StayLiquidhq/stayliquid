@@ -25,8 +25,9 @@ export async function getUsdcPrice(retries = 3, delay = 2000): Promise<number | 
         throw new Error("Invalid data structure from CoinGecko API.");
       }
 
-    } catch (error: any) {
-      console.error(`\n❌ PRICE FETCH ERROR (Attempt ${i + 1}/${retries}):`, error.message);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "An unknown error occurred";
+      console.error(`\n❌ PRICE FETCH ERROR (Attempt ${i + 1}/${retries}):`, errorMessage);
       if (i < retries - 1) {
         console.log(`Retrying in ${delay / 1000} seconds...`);
         await new Promise(res => setTimeout(res, delay));

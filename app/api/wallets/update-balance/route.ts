@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
 import { sweepFunds } from "@/lib/sweep";
 
+interface TokenTransfer {
+  mint: string;
+  toUserAccount: string;
+  tokenAmount: number;
+}
+
 // Using Devnet USDC mint for this example. Change to mainnet if needed.
 const USDC_MINT = process.env.USDC_MINT; // Mainnet USDC mint
 
@@ -16,7 +22,7 @@ export async function POST(request: NextRequest) {
 
         if (Array.isArray(transaction.tokenTransfers)) {
           const usdcTransfers = transaction.tokenTransfers.filter(
-            (t: any) => t.mint === USDC_MINT
+            (t: TokenTransfer) => t.mint === USDC_MINT
           );
 
           for (const transfer of usdcTransfers) {
@@ -30,7 +36,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, message: "Webhook processed" });
 
-  } catch (err: any) {
+  } catch (err) {
     console.error("Error processing webhook:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }

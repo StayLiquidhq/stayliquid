@@ -119,8 +119,9 @@ export async function POST(request: NextRequest) {
       throw sendErr;
     }
 
-  } catch (err: any) {
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : "An unknown error occurred";
     console.error(err);
-    return NextResponse.json({ error: err.message }, { status: 500, headers: corsHeaders });
+    return NextResponse.json({ error: errorMessage }, { status: 500, headers: corsHeaders });
   }
 }
