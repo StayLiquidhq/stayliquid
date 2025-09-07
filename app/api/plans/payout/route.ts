@@ -144,7 +144,6 @@ export async function POST(request: NextRequest) {
     // 9. Atomically update wallet and plan using the database function
     const { error: rpcError } = await supabase.rpc('process_payout_update', {
         p_plan_id: plan_id,
-        p_wallet_id: wallet.id,
         p_new_balance: newBalance,
         p_last_payout_date: now.toISOString(),
         p_next_payout_date: next_payout_date ? next_payout_date.toISOString() : null
