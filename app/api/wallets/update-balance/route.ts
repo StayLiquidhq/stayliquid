@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import supabase from "../../../../utils/supabase";
 import { sweepFunds } from "../../../../lib/sweep";
+import { logTransaction } from "../../../../lib/transaction_history";
 
 interface TokenTransfer {
   fromUserAccount: string;
@@ -59,21 +60,27 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
       return;
     }
 
-    console.log(`Processing incoming transfer of ${amount} USDC to wallet ${toAddress}`);
     // 2. Sweep the incoming amount to the dev wallet
-    await sweepFunds(wallet.privy_id, toAddress);
+    await sweepFunds(wallet.privy_id, toAddress, amount);
 
-    // 3. After a successful sweep, update the user's wallet balance and log the transaction atomically
-    const { error: rpcError } = await supabase.rpc("credit_wallet", {
+    // 3. After a successful sweep, update the user's wallet balance in our DB atomically
+    const { error: rpcError } = await supabase.rpc("increment_balance", {
       wallet_address: toAddress,
       amount_to_add: amount,
-      from_address: fromAddress,
     });
 
     if (rpcError) {
-      console.error(`Failed to update balance and log transaction for wallet ${toAddress}:`, rpcError);
+      console.error(`Failed to update balance for wallet ${toAddress}:`, rpcError);
     } else {
-      console.log(`Successfully swept, updated balance, and logged transaction for wallet ${toAddress}`);
+      console.log(`Successfully swept and updated balance for wallet ${toAddress}`);
+      // Log the credit transaction after balance is successfully updated
+      await logTransaction({
+        wallet_id: wallet.id,
+        type: 'credit',
+        amount: amount,
+        currency: 'USDC',
+        description: `Received from ${fromAddress}`,
+      });
     }
   } catch (error) {
     console.error(`Error processing transfer for ${toAddress}:`, error);

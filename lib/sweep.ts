@@ -9,7 +9,7 @@ import {
 const SOLANA_DEVNET = "https://api.devnet.solana.com";
 const USDC_DEVNET_MINT = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
 
-export async function sweepFunds(userPrivyId: string, userWalletAddress: string) {
+export async function sweepFunds(userPrivyId: string, userWalletAddress: string, amount: number) {
   const devPrivateKey = process.env.DEV_WALLET_PRIVATE_KEY;
   const privyAppId = process.env.PRIVY_APP_ID;
   const privyAppSecret = process.env.PRIVY_APP_SECRET;
@@ -27,14 +27,8 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string)
   const senderTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, sender);
   const recipientTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, recipient);
 
-  const balanceResponse = await connection.getTokenAccountBalance(senderTokenAccount);
-  const amount = balanceResponse.value.uiAmount;
-  console.log(`Preparing to sweep ${amount} USDC from ${userWalletAddress} to dev wallet.`);
-
-  if (!amount || amount === 0) {
-    console.log(`No funds to sweep from ${userWalletAddress}.`);
-    return;
-  }
+  const userAvailableBalance = await checkUsdcBalance(userWalletAddress);
+  console.log(`User ${userWalletAddress} has ${userAvailableBalance} USDC available.`);
 
   const tx = new Transaction();
 
@@ -93,4 +87,23 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string)
 
   console.log(`Successfully swept ${amount} USDC from ${userWalletAddress}. Signature: ${signature}`);
   return signature;
+}
+
+export async function checkUsdcBalance(userWalletAddress: string) {
+  const connection = new Connection(SOLANA_DEVNET);
+  const userPublicKey = new PublicKey(userWalletAddress);
+
+  try {
+    const userTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, userPublicKey);
+    const tokenBalance = await connection.getTokenAccountBalance(userTokenAccount);
+
+    if (!tokenBalance.value.uiAmount) {
+      return 0;
+    }
+
+    return tokenBalance.value.uiAmount;
+  } catch (error) {
+    // If the token account does not exist, it means the balance is 0.
+    return 0;
+  }
 }
