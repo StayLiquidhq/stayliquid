@@ -1,15 +1,15 @@
-import { Connection } from "@solana/web3.js";
+import { Helius } from "helius-sdk";
 
 /**
- * Check the status of a Solana transaction by signature.
+ * Check the status of a Solana transaction by signature using Helius SDK.
  *
  * @param {string} signature - The transaction signature to check.
- * @param {Connection} connection - A Solana RPC connection instance.
+ * @param {Helius} helius - A Helius SDK instance.
  * @returns {Promise<"success" | "pending" | "failed">}
  */
-export async function getTransactionStatus(signature: string, connection: Connection): Promise<"success" | "pending" | "failed"> {
+export async function getTransactionStatus(signature: string, helius: Helius): Promise<"success" | "pending" | "failed"> {
     try {
-        const status = await connection.getSignatureStatus(signature, {
+        const status = await helius.connection.getSignatureStatus(signature, {
             searchTransactionHistory: true
         });
 

@@ -3,7 +3,7 @@ import supabase from "../../../../utils/supabase";
 import { sweepFunds } from "../../../../lib/sweep";
 import { logTransaction } from "../../../../lib/transaction_history";
 import { getTransactionStatus } from "../../../../lib/transaction_status";
-import { Connection } from "@solana/web3.js";
+import { Helius } from "helius-sdk";
 
 interface TokenTransfer {
   fromUserAccount: string;
@@ -51,16 +51,15 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
   if (!toAddress) return;
 
   try {
-    const rpc = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`
-    const connection = new Connection(process.env.SOLANA_RPC_URL!);
-    let status = await getTransactionStatus(signature, connection);
+    const helius = new Helius(process.env.HELIUS_API_KEY!);
+    let status = await getTransactionStatus(signature, helius);
     let attempts = 0;
     const maxAttempts = 2;
     const delay = 20000; // 20 seconds
 
     while (status === "pending" && attempts < maxAttempts) {
       await new Promise(resolve => setTimeout(resolve, delay));
-      status = await getTransactionStatus(signature, connection);
+      status = await getTransactionStatus(signature, helius);
       attempts++;
     }
 
