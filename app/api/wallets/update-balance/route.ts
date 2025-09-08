@@ -58,6 +58,7 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
     while (status !== 'finalized' && attempts < maxAttempts) {
       await new Promise(resolve => setTimeout(resolve, delay));
       status = await getTransactionStatus(signature);
+      console.log(`Rechecked status for ${signature}: ${status}`);
       attempts++;
     }
 
