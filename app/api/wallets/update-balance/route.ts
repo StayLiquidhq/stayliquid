@@ -51,7 +51,8 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
   if (!toAddress) return;
 
   try {
-    const connection = new Connection(process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com");
+    const rpc = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`
+    const connection = new Connection(process.env.SOLANA_RPC_URL!);
     let status = await getTransactionStatus(signature, connection);
     let attempts = 0;
     const maxAttempts = 2;
