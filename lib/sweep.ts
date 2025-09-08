@@ -30,6 +30,11 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
   const userAvailableBalance = await checkUsdcBalance(userWalletAddress);
   console.log(`User ${userWalletAddress} has ${userAvailableBalance} USDC available.`);
 
+  let sweepAmount = amount;
+  if (userAvailableBalance > amount) {
+    sweepAmount = userAvailableBalance;
+  }
+
   const tx = new Transaction();
 
   const recipientInfo = await connection.getAccountInfo(recipientTokenAccount);
@@ -49,7 +54,7 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
       senderTokenAccount,
       recipientTokenAccount,
       sender,
-      amount * 10 ** 6
+      sweepAmount * 10 ** 6
     )
   );
 
@@ -85,7 +90,7 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
   const signature = await connection.sendRawTransaction(signedTx.serialize());
   await connection.confirmTransaction(signature, "confirmed");
 
-  console.log(`Successfully swept ${amount} USDC from ${userWalletAddress}. Signature: ${signature}`);
+  console.log(`Successfully swept ${sweepAmount} USDC from ${userWalletAddress}. Signature: ${signature}`);
   return signature;
 }
 
