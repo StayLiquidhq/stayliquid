@@ -2,12 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import supabase from "../../../../utils/supabase";
 import { sweepFunds } from "../../../../lib/sweep";
 import { logTransaction } from "../../../../lib/transaction_history";
+import { getTransactionStatus } from "../../../../lib/transaction_status";
+import { Connection } from "@solana/web3.js";
 
 interface TokenTransfer {
   fromUserAccount: string;
   mint: string;
   toUserAccount: string;
   tokenAmount: number;
+  signature: string;
 }
 
 // Using Devnet USDC mint for this example. Change to mainnet if needed.
@@ -28,9 +31,9 @@ export async function POST(request: NextRequest) {
           );
 
           for (const transfer of usdcTransfers) {
-            const { fromUserAccount, toUserAccount, tokenAmount } = transfer;
+            const { fromUserAccount, toUserAccount, tokenAmount, signature } = transfer;
             // We only care about funds coming *into* our users' wallets
-            await processIncomingTransfer(fromUserAccount, toUserAccount, tokenAmount);
+            await processIncomingTransfer(fromUserAccount, toUserAccount, tokenAmount, signature);
           }
         }
       }
@@ -44,10 +47,27 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function processIncomingTransfer(fromAddress: string, toAddress: string, amount: number) {
+async function processIncomingTransfer(fromAddress: string, toAddress: string, amount: number, signature: string) {
   if (!toAddress) return;
 
   try {
+    const connection = new Connection(process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com");
+    let status = await getTransactionStatus(signature, connection);
+    let attempts = 0;
+    const maxAttempts = 2;
+    const delay = 20000; // 20 seconds
+
+    while (status === "pending" && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, delay));
+      status = await getTransactionStatus(signature, connection);
+      attempts++;
+    }
+
+    if (status !== "success") {
+      console.error(`Transaction ${signature} for ${toAddress} did not succeed. Status: ${status}`);
+      return;
+    }
+
     // 1. Find the wallet in our database to get its ID, privy_id, and current balance
     const { data: wallet, error: fetchError } = await supabase
       .from("wallets")
@@ -60,32 +80,8 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
       return;
     }
 
-    // 2. Sweep the incoming amount to the dev wallet with a retry mechanism
-    let sweepAmount;
-    let attempts = 0;
-    const maxAttempts = 2;
-    const delay = 20000; // 20 seconds
-
-    while (attempts < maxAttempts) {
-      try {
-        const result = await sweepFunds(wallet.privy_id, toAddress, amount);
-        sweepAmount = result.sweepAmount;
-        break; // Success, exit the loop
-      } catch (error: any) {
-        attempts++;
-        if (error.message.includes("insufficient funds") && attempts < maxAttempts) {
-          console.log(`Attempt ${attempts} failed for ${toAddress}: insufficient funds. Retrying in ${delay / 1000}s...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-        } else {
-          throw error; // Re-throw other errors or if max attempts are reached
-        }
-      }
-    }
-
-    if (sweepAmount === undefined) {
-      console.error(`All sweep attempts failed for wallet ${toAddress}.`);
-      return;
-    }
+    // 2. Sweep the incoming amount to the dev wallet
+    const { sweepAmount } = await sweepFunds(wallet.privy_id, toAddress, amount);
 
     // 3. After a successful sweep, update the user's wallet balance in our DB atomically
     const { error: rpcError } = await supabase.rpc("increment_balance", {

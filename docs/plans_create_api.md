@@ -22,6 +22,10 @@ The request body must be a JSON object containing the plan details and payout in
 
 ### Plan Types
 
+All plans, regardless of type, require a `name`.
+
+- `name`: `string` (A user-defined name for the plan, e.g., "New Car Fund")
+
 There are three types of plans: `locked`, `flexible`, and `target`.
 
 #### 1. Locked Plan
@@ -30,6 +34,7 @@ A plan with a fixed recurring payout amount and frequency.
 
 **Required Fields**:
 - `plan_type`: `"locked"`
+- `name`: `string`
 - `received_amount`: `number` (The amount the user will receive)
 - `recurrent_payout`: `number` (The recurring payout amount)
 - `frequency`: `string` (e.g., "monthly", "weekly")
@@ -41,6 +46,7 @@ Similar to a locked plan but allows for more flexibility.
 
 **Required Fields**:
 - `plan_type`: `"flexible"`
+- `name`: `string`
 - `received_amount`: `number`
 - `recurrent_payout`: `number`
 - `frequency`: `string`
@@ -52,6 +58,7 @@ A plan where the user saves towards a specific amount or by a certain date.
 
 **Required Fields**:
 - `plan_type`: `"target"`
+- `name`: `string`
 - `target_type`: `enum("amount", "date")`
 - `target_amount`: `number` (Required if `target_type` is "amount")
 - `target_date`: `string` (Required if `target_type` is "date", e.g., "2024-12-31")
@@ -88,6 +95,7 @@ Below are example request bodies for different scenarios.
 
 ```json
 {
+  "name": "Monthly Savings",
   "plan_type": "locked",
   "received_amount": 1000,
   "recurrent_payout": 100,
@@ -104,6 +112,7 @@ Below are example request bodies for different scenarios.
 
 ```json
 {
+  "name": "Vacation Fund",
   "plan_type": "target",
   "target_type": "amount",
   "target_amount": 5000,
@@ -116,6 +125,7 @@ Below are example request bodies for different scenarios.
 
 ```json
 {
+  "name": "Rainy Day Fund",
   "plan_type": "target",
   "target_type": "date",
   "target_date": "2025-01-01",

@@ -55,7 +55,9 @@ const planSchema = z.union([
     }),
 ]);
 
-const createPlanSchema = z.intersection(planSchema, payoutSchema);
+const createPlanSchema = z.intersection(planSchema, payoutSchema).and(z.object({
+  name: z.string().min(1),
+}));
 
 // --- Endpoint ---
 export async function POST(request: NextRequest) {

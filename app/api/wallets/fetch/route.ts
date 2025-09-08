@@ -5,6 +5,7 @@ import { getUsdcPrice } from "@/lib/coingecko";
 interface Plan {
   id: string;
   plan_type: string;
+  name: string;
   wallets: WalletData[];
 }
 
@@ -57,6 +58,7 @@ export async function GET(request: NextRequest) {
       .select(`
         id,
         plan_type,
+        name,
         wallets (
           id,
           privy_id,
@@ -83,13 +85,13 @@ export async function GET(request: NextRequest) {
     }
 
     // 6. Process wallets and calculate USD value
-    const walletDetails = plans?.flatMap((plan: Plan, planIndex: number) => 
-      plan.wallets.map((wallet: WalletData, walletIndex: number) => {
+    const walletDetails = plans?.flatMap((plan: Plan) => 
+      plan.wallets.map((wallet: WalletData) => {
         const balance = Number(wallet.balance) || 0;
         const usdValue = balance * usdcPrice;
         return {
           wallet_id: wallet.id,
-          name: `vault ${planIndex * plan.wallets.length + walletIndex + 1}`,
+          name: plan.name,
           user_id: user.id,
           address: wallet.address,
           balance: balance.toString(),
