@@ -32,7 +32,9 @@ export async function POST(request: NextRequest) {
           for (const transfer of usdcTransfers) {
             const { fromUserAccount, toUserAccount, tokenAmount, signature } = transfer;
             // We only care about funds coming *into* our users' wallets
-            await processIncomingTransfer(fromUserAccount, toUserAccount, tokenAmount, signature);
+            if (signature) {
+              await processIncomingTransfer(fromUserAccount, toUserAccount, tokenAmount, signature);
+            }
           }
         }
       }
@@ -58,7 +60,6 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
     while (status !== 'finalized' && attempts < maxAttempts) {
       await new Promise(resolve => setTimeout(resolve, delay));
       status = await getTransactionStatus(signature);
-      console.log(`Rechecked status for ${signature}: ${status}`);
       attempts++;
     }
 
