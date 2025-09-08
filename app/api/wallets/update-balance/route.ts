@@ -3,7 +3,6 @@ import supabase from "../../../../utils/supabase";
 import { sweepFunds } from "../../../../lib/sweep";
 import { logTransaction } from "../../../../lib/transaction_history";
 import { getTransactionStatus } from "../../../../lib/transaction_status";
-import { Helius } from "helius-sdk";
 
 interface TokenTransfer {
   fromUserAccount: string;
@@ -51,19 +50,18 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
   if (!toAddress) return;
 
   try {
-    const helius = new Helius(process.env.HELIUS_API_KEY!);
-    let status = await getTransactionStatus(signature, helius);
+    let status = await getTransactionStatus(signature);
     let attempts = 0;
     const maxAttempts = 2;
     const delay = 20000; // 20 seconds
 
-    while (status === "pending" && attempts < maxAttempts) {
+    while (status !== 'finalized' && attempts < maxAttempts) {
       await new Promise(resolve => setTimeout(resolve, delay));
-      status = await getTransactionStatus(signature, helius);
+      status = await getTransactionStatus(signature);
       attempts++;
     }
 
-    if (status !== "success") {
+    if (status !== "finalized") {
       console.error(`Transaction ${signature} for ${toAddress} did not succeed. Status: ${status}`);
       return;
     }
