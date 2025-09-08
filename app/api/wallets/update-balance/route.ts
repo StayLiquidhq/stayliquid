@@ -64,7 +64,7 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
     let sweepAmount;
     let attempts = 0;
     const maxAttempts = 2;
-    const delay = 2000; // 2 seconds
+    const delay = 20000; // 20 seconds
 
     while (attempts < maxAttempts) {
       try {
