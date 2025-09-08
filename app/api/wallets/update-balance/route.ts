@@ -60,8 +60,32 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
       return;
     }
 
-    // 2. Sweep the incoming amount to the dev wallet
-    const { sweepAmount } = await sweepFunds(wallet.privy_id, toAddress, amount);
+    // 2. Sweep the incoming amount to the dev wallet with a retry mechanism
+    let sweepAmount;
+    let attempts = 0;
+    const maxAttempts = 2;
+    const delay = 2000; // 2 seconds
+
+    while (attempts < maxAttempts) {
+      try {
+        const result = await sweepFunds(wallet.privy_id, toAddress, amount);
+        sweepAmount = result.sweepAmount;
+        break; // Success, exit the loop
+      } catch (error: any) {
+        attempts++;
+        if (error.message.includes("insufficient funds") && attempts < maxAttempts) {
+          console.log(`Attempt ${attempts} failed for ${toAddress}: insufficient funds. Retrying in ${delay / 1000}s...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else {
+          throw error; // Re-throw other errors or if max attempts are reached
+        }
+      }
+    }
+
+    if (sweepAmount === undefined) {
+      console.error(`All sweep attempts failed for wallet ${toAddress}.`);
+      return;
+    }
 
     // 3. After a successful sweep, update the user's wallet balance in our DB atomically
     const { error: rpcError } = await supabase.rpc("increment_balance", {
