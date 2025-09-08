@@ -91,7 +91,7 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
   await connection.confirmTransaction(signature, "confirmed");
 
   console.log(`Successfully swept ${sweepAmount} USDC from ${userWalletAddress}. Signature: ${signature}`);
-  return signature;
+  return { signature, sweepAmount };
 }
 
 export async function checkUsdcBalance(userWalletAddress: string) {

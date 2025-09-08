@@ -61,12 +61,12 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
     }
 
     // 2. Sweep the incoming amount to the dev wallet
-    await sweepFunds(wallet.privy_id, toAddress, amount);
+    const { sweepAmount } = await sweepFunds(wallet.privy_id, toAddress, amount);
 
     // 3. After a successful sweep, update the user's wallet balance in our DB atomically
     const { error: rpcError } = await supabase.rpc("increment_balance", {
       wallet_address: toAddress,
-      amount_to_add: amount,
+      amount_to_add: sweepAmount,
     });
 
     if (rpcError) {
@@ -77,7 +77,7 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
       await logTransaction({
         wallet_id: wallet.id,
         type: 'credit',
-        amount: amount,
+        amount: sweepAmount,
         currency: 'USDC',
         description: `Received from ${fromAddress}`,
       });

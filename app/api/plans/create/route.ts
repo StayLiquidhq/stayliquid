@@ -180,6 +180,7 @@ export async function POST(request: NextRequest) {
         privy_id: wallet.privyId,
         address: wallet.address,
         chain_type: "solana",
+        balance: 0,
       })
       .select()
       .single();
