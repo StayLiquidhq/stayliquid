@@ -9,7 +9,6 @@ interface TokenTransfer {
   mint: string;
   toUserAccount: string;
   tokenAmount: number;
-  signature: string;
 }
 
 // Using Devnet USDC mint for this example. Change to mainnet if needed.
@@ -30,10 +29,15 @@ export async function POST(request: NextRequest) {
           );
 
           for (const transfer of usdcTransfers) {
-            const { fromUserAccount, toUserAccount, tokenAmount, signature } = transfer;
+            const { fromUserAccount, toUserAccount, tokenAmount } = transfer;
             // We only care about funds coming *into* our users' wallets
-            if (signature) {
-              await processIncomingTransfer(fromUserAccount, toUserAccount, tokenAmount, signature);
+            if (transaction.signature) {
+              await processIncomingTransfer(
+                fromUserAccount,
+                toUserAccount,
+                tokenAmount,
+                transaction.signature
+              );
             }
           }
         }
