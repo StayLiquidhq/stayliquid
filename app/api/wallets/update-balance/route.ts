@@ -53,6 +53,7 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
 
   try {
     let status = await getTransactionStatus(signature);
+    console.log(`Initial status for ${signature}: ${status}`);
     let attempts = 0;
     const maxAttempts = 2;
     const delay = 20000; // 20 seconds
@@ -60,6 +61,7 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
     while (status !== 'finalized' && attempts < maxAttempts) {
       await new Promise(resolve => setTimeout(resolve, delay));
       status = await getTransactionStatus(signature);
+      console.log(`Rechecked status for ${signature}: ${status}`);
       attempts++;
     }
 
