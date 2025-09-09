@@ -9,6 +9,7 @@ import {
   createAssociatedTokenAccountInstruction, 
   createTransferInstruction 
 } from "@solana/spl-token";
+import { logTransaction } from "../../../../lib/transaction_history";
 
 const SOLANA_DEVNET = "https://api.devnet.solana.com";
 const USDC_DEVNET_MINT = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
@@ -117,6 +118,25 @@ export async function POST(request: NextRequest) {
     // 9. Sign and send the transaction
     const signature = await connection.sendTransaction(tx, [payoutKeypair]);
     await connection.confirmTransaction(signature, "confirmed");
+
+    // 10. Log the transactions
+    await logTransaction({
+      wallet_id: walletId,
+      type: 'debit',
+      amount: payoutAmount,
+      currency: 'USDC',
+      description: `Plan broken. Payout to ${recipientAddress}`,
+      solana_signature: signature,
+    });
+
+    await logTransaction({
+        wallet_id: walletId,
+        type: 'debit',
+        amount: feeAmount,
+        currency: 'USDC',
+        description: 'Plan breakage fee',
+        solana_signature: signature,
+    });
 
     return NextResponse.json({ success: true, signature }, { headers: corsHeaders });
 
