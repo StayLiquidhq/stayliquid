@@ -27,13 +27,7 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
   const senderTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, sender);
   const recipientTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, recipient);
 
-  const userAvailableBalance = await checkUsdcBalance(userWalletAddress);
-  console.log(`User ${userWalletAddress} has ${userAvailableBalance} USDC available.`);
-
-  let sweepAmount = amount;
-  if (userAvailableBalance > amount) {
-    sweepAmount = userAvailableBalance;
-  }
+  const sweepAmount = amount;
 
   const tx = new Transaction();
 
