@@ -14,13 +14,8 @@ export async function OPTIONS() {
 export async function GET(request: NextRequest) {
   try {
     // 1. Authenticate user
-    const authHeader = request.headers.get("authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
-    }
-    const token = authHeader.split(" ")[1];
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) {
+    const authHeader = request.headers.get("x-custom-auth");
+    if (authHeader !== process.env.PAYOUT_AUTH_TOKEN) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
     }
 
