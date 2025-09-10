@@ -38,23 +38,33 @@ export async function POST(request: NextRequest) {
     );
 
     if (signature && sweepAmount > 0) {
-      // Check if this sweep transaction has already been processed
-      const { data: existingTx, error: txCheckError } = await supabase
+      // Idempotency: claim this sweep's signature upfront. Requires unique constraint on processed_transactions.signature
+      const { error: claimError } = await supabase
         .from("processed_transactions")
-        .select("signature")
-        .eq("signature", signature)
-        .single();
-
-      if (txCheckError && txCheckError.code !== 'PGRST116') { // Ignore 'not found' error
-        console.error(`Error checking for existing transaction ${signature}:`, txCheckError);
-        return NextResponse.json({ error: "Internal server error", details: "Failed to check transaction history" }, { status: 500, headers: corsHeaders });
+        .insert({ signature });
+      if (claimError) {
+        if ((claimError as any).code === "23505") {
+          console.log(
+            `Sweep transaction ${signature} already claimed. Skipping.`
+          );
+          return NextResponse.json(
+            { signature, sweepAmount, message: "Sweep already processed" },
+            { headers: corsHeaders }
+          );
+        }
+        console.error(
+          `Failed to claim sweep transaction ${signature}:`,
+          claimError
+        );
+        return NextResponse.json(
+          {
+            error: "Internal server error",
+            details: "Failed to claim sweep transaction",
+          },
+          { status: 500, headers: corsHeaders }
+        );
       }
 
-      if (existingTx) {
-        console.log(`Sweep transaction ${signature} has already been processed. Skipping balance update.`);
-        return NextResponse.json({ signature, sweepAmount, message: "Sweep already processed" }, { headers: corsHeaders });
-      }
-      
       const { data: wallet, error: fetchError } = await supabase
         .from("wallets")
         .select("id")
@@ -65,6 +75,11 @@ export async function POST(request: NextRequest) {
         console.error(
           `Wallet not found for address ${wallet_address}, cannot update balance.`
         );
+        // Release claim so it can be retried once wallet exists
+        await supabase
+          .from("processed_transactions")
+          .delete()
+          .eq("signature", signature);
       } else {
         const { error: rpcError } = await supabase.rpc("increment_balance", {
           wallet_address: wallet_address,
@@ -76,31 +91,41 @@ export async function POST(request: NextRequest) {
             `Failed to update balance for wallet ${wallet_address}:`,
             rpcError
           );
+          // Release claim on failure so the sweep can be retried
+          await supabase
+            .from("processed_transactions")
+            .delete()
+            .eq("signature", signature);
+          return NextResponse.json(
+            { error: "Failed to update balance" },
+            { status: 500, headers: corsHeaders }
+          );
         } else {
           console.log(
             `Successfully swept and updated balance for wallet ${wallet_address}`
           );
-          await logTransaction({
-            wallet_id: wallet.id,
-            type: "credit",
-            amount: sweepAmount,
-            currency: "USDC",
-            description: `Wallet balance updated`,
-          });
-
-          // Mark the transaction as processed
-          const { error: insertError } = await supabase
-            .from("processed_transactions")
-            .insert({ signature });
-
-          if (insertError) {
-            console.error(`Failed to mark transaction ${signature} as processed:`, insertError);
+          try {
+            await logTransaction({
+              wallet_id: wallet.id,
+              type: "credit",
+              amount: sweepAmount,
+              currency: "USDC",
+              description: `Wallet balance updated`,
+            });
+          } catch (e) {
+            console.error(
+              `Failed to log transaction for ${wallet_address}:`,
+              e
+            );
           }
         }
       }
     }
 
-    return NextResponse.json({ signature, sweepAmount }, { headers: corsHeaders });
+    return NextResponse.json(
+      { signature, sweepAmount },
+      { headers: corsHeaders }
+    );
   } catch (err: any) {
     console.error("Error sweeping wallet:", err);
     return NextResponse.json(
