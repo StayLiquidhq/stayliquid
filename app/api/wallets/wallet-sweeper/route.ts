@@ -9,6 +9,16 @@ const sweepSchema = z.object({
   wallet_address: z.string(),
 });
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: corsHeaders });
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -17,7 +27,7 @@ export async function POST(request: NextRequest) {
     if (!validation.success) {
       return NextResponse.json(
         { error: validation.error.format() },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -64,12 +74,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ signature, sweepAmount });
+    return NextResponse.json({ signature, sweepAmount }, { headers: corsHeaders });
   } catch (err: any) {
     console.error("Error sweeping wallet:", err);
     return NextResponse.json(
       { error: "Internal server error", details: err.message },
-      { status: 500 }
+      { status: 500, headers: corsHeaders }
     );
   }
 }
