@@ -14,8 +14,6 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders });
 }
 
-
-
 // --- Zod Validation ---
 const payoutSchema = z.union([
   z.object({
@@ -55,9 +53,11 @@ const planSchema = z.union([
     }),
 ]);
 
-const createPlanSchema = z.intersection(planSchema, payoutSchema).and(z.object({
-  name: z.string().min(1),
-}));
+const createPlanSchema = z.intersection(planSchema, payoutSchema).and(
+  z.object({
+    name: z.string().min(1),
+  })
+);
 
 // --- Endpoint ---
 export async function POST(request: NextRequest) {
@@ -97,33 +97,33 @@ export async function POST(request: NextRequest) {
 
     // 4. Calculate the first payout date for recurring plans
     let next_payout_date = null;
-    if ('frequency' in validatedData && 'payout_time' in validatedData) {
-        const { frequency, payout_time } = validatedData;
-        const now = new Date();
-        const [hours, minutes] = payout_time.split(':');
-        
-        // Set the time for today
-        now.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+    if ("frequency" in validatedData && "payout_time" in validatedData) {
+      const { frequency, payout_time } = validatedData;
+      const now = new Date();
+      const [hours, minutes] = payout_time.split(":");
 
-        // Calculate the next date based on frequency
-        switch (frequency.toLowerCase()) {
-            case 'daily':
-                // If the time is already past for today, schedule for tomorrow
-                if (now < new Date()) {
-                    now.setDate(now.getDate() + 1);
-                }
-                break;
-            case 'weekly':
-                now.setDate(now.getDate() + 7);
-                break;
-            case 'monthly':
-                now.setMonth(now.getMonth() + 1);
-                break;
-            default:
-                // Handle other frequencies or throw an error
-                break;
-        }
-        next_payout_date = now.toISOString();
+      // Set the time for today
+      now.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+
+      // Calculate the next date based on frequency
+      switch (frequency.toLowerCase()) {
+        case "daily":
+          // If the time is already past for today, schedule for tomorrow
+          if (now < new Date()) {
+            now.setDate(now.getDate() + 1);
+          }
+          break;
+        case "weekly":
+          now.setDate(now.getDate() + 7);
+          break;
+        case "monthly":
+          now.setMonth(now.getMonth() + 1);
+          break;
+        default:
+          // Handle other frequencies or throw an error
+          break;
+      }
+      next_payout_date = now.toISOString();
     }
 
     // 5. Insert plan
@@ -174,7 +174,11 @@ export async function POST(request: NextRequest) {
     // 5. Create wallet via Privy
     const wallet = await createWallet();
 
-    // 6. Save wallet in DB
+    // 6. Update the webhook with the new wallet address
+    // This is done asynchronously and does not block the response
+    updateWebhookWithNewAddress(wallet.address);
+
+    // 7. Save wallet in DB
     const { data: newWallet, error: walletError } = await supabase
       .from("wallets")
       .insert({
@@ -193,10 +197,6 @@ export async function POST(request: NextRequest) {
         { status: 500, headers: corsHeaders }
       );
     }
-
-    // 7. Update the webhook with the new wallet address
-    // This is done asynchronously and does not block the response
-    updateWebhookWithNewAddress(newWallet.address);
 
     // 8. Return response
     return NextResponse.json(
