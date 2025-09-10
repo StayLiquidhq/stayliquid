@@ -40,11 +40,10 @@ export async function GET(request: NextRequest) {
     const userId = authData.user.id;
 
     // 3. Check if plan exists
-    const { data: plan, error: planError } = await supabase
+    const { data: plans, error: planError } = await supabase
       .from("plans")
       .select("id")
-      .eq("user_id", userId)
-      .maybeSingle(); 
+      .eq("user_id", userId);
 
     if (planError) {
       console.error("Error fetching plan:", planError);
@@ -55,7 +54,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json(
-      { error: null, hasPlan: !!plan },
+      { error: null, hasPlan: plans && plans.length > 0 },
       { status: 200, headers: corsHeaders }
     );
   } catch (err) {

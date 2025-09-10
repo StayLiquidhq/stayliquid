@@ -14,17 +14,21 @@ export async function OPTIONS() {
 
 // Use a real API service to resolve the geo-location from the IP address.
 async function resolveGeoLocation(ip: string) {
+  console.log("Resolving geo-location for IP:", ip);
   if (ip === "::1" || ip === "127.0.0.1") {
     return { country: "Localhost", city: "Local" };
   }
   try {
-    const response = await fetch(`https://ip-api.com/json/${ip}`);
+    const response = await fetch(`https://ipapi.co/${ip}/json/`);
     if (!response.ok) {
       console.error(`Geo location API failed with status: ${response.status}`);
       return { country: "Unknown", city: "Unknown" };
     }
     const data = await response.json();
-    return { country: data.country || "Unknown", city: data.city || "Unknown" };
+    return {
+      country: data.country_name || "Unknown",
+      city: data.city || "Unknown",
+    };
   } catch (error) {
     console.error("Geo location fetch error:", error);
     return { country: "Unknown", city: "Unknown" };
