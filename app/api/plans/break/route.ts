@@ -119,6 +119,23 @@ export async function POST(request: NextRequest) {
     const signature = await connection.sendTransaction(tx, [payoutKeypair]);
     await connection.confirmTransaction(signature, "confirmed");
 
+    // Check if this break transaction has already been processed
+    const { data: existingTx, error: txCheckError } = await supabase
+      .from("processed_transactions")
+      .select("signature")
+      .eq("signature", signature)
+      .single();
+
+    if (txCheckError && txCheckError.code !== 'PGRST116') { // Ignore 'not found' error
+      console.error(`Error checking for existing transaction ${signature}:`, txCheckError);
+      return NextResponse.json({ error: "Internal server error", details: "Failed to check transaction history" }, { status: 500, headers: corsHeaders });
+    }
+
+    if (existingTx) {
+      console.log(`Break transaction ${signature} has already been processed. Skipping database update.`);
+      return NextResponse.json({ success: true, signature, message: "Break already processed" }, { headers: corsHeaders });
+    }
+
     // 10. Log the transactions
     await logTransaction({
       wallet_id: walletId,
@@ -137,6 +154,15 @@ export async function POST(request: NextRequest) {
         description: 'Plan breakage fee',
         solana_signature: signature,
     });
+
+    // Mark the transaction as processed
+    const { error: insertError } = await supabase
+      .from("processed_transactions")
+      .insert({ signature });
+
+    if (insertError) {
+      console.error(`Failed to mark transaction ${signature} as processed:`, insertError);
+    }
 
     return NextResponse.json({ success: true, signature }, { headers: corsHeaders });
 

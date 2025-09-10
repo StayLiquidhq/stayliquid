@@ -56,6 +56,23 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
   if (!toAddress) return;
 
   try {
+    // Check if the transaction has already been processed
+    const { data: existingTx, error: txCheckError } = await supabase
+      .from("processed_transactions")
+      .select("signature")
+      .eq("signature", signature)
+      .single();
+
+    if (txCheckError && txCheckError.code !== 'PGRST116') { // Ignore 'not found' error
+      console.error(`Error checking for existing transaction ${signature}:`, txCheckError);
+      return; // Exit to be safe
+    }
+
+    if (existingTx) {
+      console.log(`Transaction ${signature} has already been processed. Skipping.`);
+      return;
+    }
+
     let status = await getTransactionStatus(signature);
     console.log(`Initial status for ${signature}: ${status}`);
     let attempts = 0;
@@ -107,6 +124,15 @@ async function processIncomingTransfer(fromAddress: string, toAddress: string, a
         currency: 'USDC',
         description: `Received from ${fromAddress}`,
       });
+
+      // Mark the transaction as processed
+      const { error: insertError } = await supabase
+        .from("processed_transactions")
+        .insert({ signature });
+
+      if (insertError) {
+        console.error(`Failed to mark transaction ${signature} as processed:`, insertError);
+      }
     }
   } catch (error) {
     console.error(`Error processing transfer for ${toAddress}:`, error);

@@ -38,6 +38,23 @@ export async function POST(request: NextRequest) {
     );
 
     if (signature && sweepAmount > 0) {
+      // Check if this sweep transaction has already been processed
+      const { data: existingTx, error: txCheckError } = await supabase
+        .from("processed_transactions")
+        .select("signature")
+        .eq("signature", signature)
+        .single();
+
+      if (txCheckError && txCheckError.code !== 'PGRST116') { // Ignore 'not found' error
+        console.error(`Error checking for existing transaction ${signature}:`, txCheckError);
+        return NextResponse.json({ error: "Internal server error", details: "Failed to check transaction history" }, { status: 500, headers: corsHeaders });
+      }
+
+      if (existingTx) {
+        console.log(`Sweep transaction ${signature} has already been processed. Skipping balance update.`);
+        return NextResponse.json({ signature, sweepAmount, message: "Sweep already processed" }, { headers: corsHeaders });
+      }
+      
       const { data: wallet, error: fetchError } = await supabase
         .from("wallets")
         .select("id")
@@ -70,6 +87,15 @@ export async function POST(request: NextRequest) {
             currency: "USDC",
             description: `Wallet balance updated`,
           });
+
+          // Mark the transaction as processed
+          const { error: insertError } = await supabase
+            .from("processed_transactions")
+            .insert({ signature });
+
+          if (insertError) {
+            console.error(`Failed to mark transaction ${signature} as processed:`, insertError);
+          }
         }
       }
     }

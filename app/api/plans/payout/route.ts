@@ -128,6 +128,23 @@ export async function POST(request: NextRequest) {
     const signature = await connection.sendTransaction(tx, [payoutKeypair]);
     await connection.confirmTransaction(signature, "confirmed");
 
+    // Check if this payout transaction has already been processed
+    const { data: existingTx, error: txCheckError } = await supabase
+      .from("processed_transactions")
+      .select("signature")
+      .eq("signature", signature)
+      .single();
+
+    if (txCheckError && txCheckError.code !== 'PGRST116') { // Ignore 'not found' error
+      console.error(`Error checking for existing transaction ${signature}:`, txCheckError);
+      return NextResponse.json({ error: "Internal server error", details: "Failed to check transaction history" }, { status: 500, headers: corsHeaders });
+    }
+
+    if (existingTx) {
+      console.log(`Payout transaction ${signature} has already been processed. Skipping database update.`);
+      return NextResponse.json({ success: true, signature, message: "Payout already processed" }, { headers: corsHeaders });
+    }
+
     // 8. Decrement wallet balance and update payout dates
     const newBalance = wallet.balance - payoutAmount;
     const now = new Date();
@@ -170,6 +187,15 @@ export async function POST(request: NextRequest) {
     if (rpcError) {
         console.error(`CRITICAL: Transaction ${signature} succeeded but the atomic database update failed for plan ${plan_id}. Error: ${rpcError.message}`);
         // This situation requires manual intervention.
+    } else {
+      // Mark the transaction as processed
+      const { error: insertError } = await supabase
+        .from("processed_transactions")
+        .insert({ signature });
+
+      if (insertError) {
+        console.error(`Failed to mark transaction ${signature} as processed:`, insertError);
+      }
     }
 
     return NextResponse.json({ success: true, signature }, { headers: corsHeaders });

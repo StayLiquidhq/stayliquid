@@ -156,10 +156,12 @@ export async function sweepAllFunds(userPrivyId: string, userWalletAddress: stri
     )
   );
 
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
   tx.feePayer = devKeypair.publicKey;
-  tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+  tx.recentBlockhash = blockhash;
 
   const encoded = Buffer.from(`${privyAppId}:${privyAppSecret}`).toString("base64");
+  console.log(`Sweeping all funds for ${userWalletAddress} with Privy App ID: ${privyAppId}`);
   const privyResponse = await fetch(`https://api.privy.io/v1/wallets/${userPrivyId}/rpc`, {
     method: "POST",
     headers: {
@@ -186,7 +188,11 @@ export async function sweepAllFunds(userPrivyId: string, userWalletAddress: stri
   signedTx.partialSign(devKeypair);
   
   const signature = await connection.sendRawTransaction(signedTx.serialize());
-  await connection.confirmTransaction(signature, "confirmed");
+  await connection.confirmTransaction({
+    signature,
+    blockhash,
+    lastValidBlockHeight,
+  });
 
   console.log(`Successfully swept ${userAvailableBalance} USDC from ${userWalletAddress}. Signature: ${signature}`);
   return { signature, sweepAmount: userAvailableBalance };
