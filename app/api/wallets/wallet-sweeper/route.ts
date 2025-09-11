@@ -6,7 +6,8 @@ import {
   Connection,
   PublicKey,
   Keypair,
-  Transaction,
+  VersionedTransaction,
+  TransactionMessage,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import {
@@ -135,16 +136,19 @@ export async function POST(request: NextRequest) {
     );
 
     const { blockhash } = await connection.getLatestBlockhash();
-    const transaction = new Transaction({
+    const message = new TransactionMessage({
+      payerKey: devPublicKey,
       recentBlockhash: blockhash,
-      feePayer: devPublicKey,
-    }).add(...instructions);
-    const serializedTransaction = transaction
-      .serialize({ requireAllSignatures: false })
-      .toString("base64");
+      instructions,
+    }).compileToV0Message();
+
+    const transaction = new VersionedTransaction(message);
+    const serializedTransaction = Buffer.from(transaction.serialize()).toString(
+      "base64"
+    );
 
     const privyResponse = await fetch(
-      `https://api.privy.io/v1/wallets/${privy_id}/sign-transaction`,
+      `https://api.privy.io/v1/wallets/${privy_id}/rpc`,
       {
         method: "POST",
         headers: {
@@ -155,24 +159,27 @@ export async function POST(request: NextRequest) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          transaction: serializedTransaction,
-          encoding: "base64",
+          method: "signTransaction",
+          params: {
+            transaction: serializedTransaction,
+            encoding: "base64",
+          },
         }),
       }
     );
 
     const privyData = await privyResponse.json();
-    if (!privyData.signed_transaction) {
+    if (!privyData.data?.signed_transaction) {
       console.error("Privy signing failed:", privyData);
       throw new Error("User failed to sign sweep transaction via Privy");
     }
 
-    const signedTx = Transaction.from(
-      Buffer.from(privyData.signed_transaction, "base64")
+    const signedTx = VersionedTransaction.deserialize(
+      Buffer.from(privyData.data.signed_transaction, "base64")
     );
-    signedTx.partialSign(devKeypair);
+    signedTx.sign([devKeypair]);
 
-    const signature = await connection.sendRawTransaction(signedTx.serialize());
+    const signature = await connection.sendTransaction(signedTx);
     await connection.confirmTransaction(signature, "confirmed");
 
     if (signature && sweepAmount > 0) {
