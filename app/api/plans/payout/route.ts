@@ -15,10 +15,8 @@ import {
 } from "@solana/spl-token";
 import { logTransaction } from "../../../../lib/transaction_history";
 
-const SOLANA_DEVNET = `https://devnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
-const USDC_DEVNET_MINT = new PublicKey(
-  "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-);
+const SOLANA_RPC = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`;
+const USDC_MINT = new PublicKey(process.env.USDC_MINT!);
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -129,18 +127,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const connection = new Connection(SOLANA_DEVNET);
+    const connection = new Connection(SOLANA_RPC);
     const payoutKeypair = Keypair.fromSecretKey(bs58.decode(payoutPrivateKey));
     const sender = payoutKeypair.publicKey;
     const recipient = new PublicKey(recipientAddress);
 
     // 5. Get associated token accounts and check dev wallet balance
     const senderTokenAccount = await getAssociatedTokenAddress(
-      USDC_DEVNET_MINT,
+      USDC_MINT,
       sender
     );
     const recipientTokenAccount = await getAssociatedTokenAddress(
-      USDC_DEVNET_MINT,
+      USDC_MINT,
       recipient
     );
 
@@ -184,7 +182,7 @@ export async function POST(request: NextRequest) {
           sender,
           recipientTokenAccount,
           recipient,
-          USDC_DEVNET_MINT
+          USDC_MINT
         )
       );
     }
@@ -299,7 +297,7 @@ export async function POST(request: NextRequest) {
     );
   } catch (err) {
     if (err instanceof SendTransactionError) {
-      const connection = new Connection(SOLANA_DEVNET);
+      const connection = new Connection(SOLANA_RPC);
       err.getLogs(connection).then((logs) => {
         console.error("Transaction failed logs:", logs);
       });

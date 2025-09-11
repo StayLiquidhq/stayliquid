@@ -21,18 +21,16 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders });
 }
 
-const SOLANA_DEVNET = `https://devnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
-const USDC_DEVNET_MINT = new PublicKey(
-  "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-);
+const SOLANA_RPC = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`;
+const USDC_MINT = new PublicKey(process.env.USDC_MINT!);
 
 async function checkUsdcBalance(userWalletAddress: string) {
-  const connection = new Connection(SOLANA_DEVNET);
+  const connection = new Connection(SOLANA_RPC);
   const userPublicKey = new PublicKey(userWalletAddress);
 
   try {
     const userTokenAccount = await getAssociatedTokenAddress(
-      USDC_DEVNET_MINT,
+      USDC_MINT,
       userPublicKey
     );
     const tokenBalance = await connection.getTokenAccountBalance(
@@ -72,11 +70,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-        const { signature, sweepAmount } = await sendSplToken(
-          privy_id,
-          wallet_address,
-          balance
-        );
+    const { signature, sweepAmount } = await sendSplToken(
+      privy_id,
+      wallet_address,
+      balance
+    );
 
     if (signature && sweepAmount > 0) {
       const { error: claimError } = await supabase

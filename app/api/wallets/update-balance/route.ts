@@ -26,7 +26,35 @@ export async function POST(request: NextRequest) {
         const signature: string | undefined = transaction.signature;
         if (!signature) continue;
 
-        // Idempotency guard: attempt to claim the transaction by inserting the signature first
+        // Aggregate USDC transfers by destination address within this transaction
+        const aggregation = new Map<string, { amount: number; from: string }>();
+        if (Array.isArray(transaction.tokenTransfers)) {
+          for (const t of transaction.tokenTransfers as TokenTransfer[]) {
+            if (t.mint !== USDC_MINT) continue;
+            if (!t.toUserAccount) continue;
+            if (typeof t.tokenAmount !== "number" || t.tokenAmount <= 0)
+              continue;
+            const current = aggregation.get(t.toUserAccount);
+            if (current) {
+              current.amount += t.tokenAmount;
+            } else {
+              aggregation.set(t.toUserAccount, {
+                amount: t.tokenAmount,
+                from: t.fromUserAccount,
+              });
+            }
+          }
+        }
+
+        // If no relevant USDC transfers found, skip without claiming idempotency
+        if (aggregation.size === 0) {
+          console.log(
+            `No relevant USDC transfers found in tx ${signature}. Skipping without claiming.`
+          );
+          continue;
+        }
+
+        // Idempotency guard: attempt to claim ONLY transactions we will process
         // Requires a unique constraint on processed_transactions.signature to be fully effective
         const { error: claimError } = await supabase
           .from("processed_transactions")
@@ -44,30 +72,10 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        // Aggregate USDC transfers by destination address within this transaction
-        const aggregation = new Map<string, { amount: number; from: string }>();
-        if (Array.isArray(transaction.tokenTransfers)) {
-          for (const t of transaction.tokenTransfers as TokenTransfer[]) {
-            if (t.mint !== USDC_MINT) continue;
-            if (!t.toUserAccount) continue;
-            const current = aggregation.get(t.toUserAccount);
-            if (current) {
-              current.amount += t.tokenAmount;
-            } else {
-              aggregation.set(t.toUserAccount, {
-                amount: t.tokenAmount,
-                from: t.fromUserAccount,
-              });
-            }
-          }
-        }
-
         // Process each destination once with the aggregated amount
         for (const [toUserAccount, { amount, from }] of aggregation.entries()) {
           await processIncomingTransfer(from, toUserAccount, amount, signature);
         }
-
-        // Signature already recorded by claim step above; nothing else to do for idempotency here
       }
     }
 
