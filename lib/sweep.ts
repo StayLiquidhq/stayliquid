@@ -115,13 +115,11 @@ export async function sweepAllFunds(userPrivyId: string, userWalletAddress: stri
   const userAvailableBalance = await checkUsdcBalance(userWalletAddress);
   console.log(`User ${userWalletAddress} has ${userAvailableBalance} USDC available.`);
 
-  if (userAvailableBalance <= 1) {
-    console.log(`Not enough funds to sweep for wallet ${userWalletAddress}. Balance is ${userAvailableBalance} USDC.`);
+  if (userAvailableBalance === 0) {
+    console.log(`No funds to sweep for wallet ${userWalletAddress}.`);
     return { signature: null, sweepAmount: 0 };
   }
 
-  const amountToSweep = userAvailableBalance - 1;
-
   // Delegate to the sweepFunds function which is known to be working correctly.
-  return sweepFunds(userPrivyId, userWalletAddress, amountToSweep);
+  return sweepFunds(userPrivyId, userWalletAddress, userAvailableBalance);
 }
