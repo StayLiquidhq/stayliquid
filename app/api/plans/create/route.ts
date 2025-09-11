@@ -84,7 +84,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 3. Validate body
+    // 3. Check user's plan count
+    const { count, error: countError } = await supabase
+      .from("plans")
+      .select("*", { count: "exact", head: true })
+      .eq("user_id", user.id);
+
+    if (countError) {
+      return NextResponse.json(
+        { error: "Failed to retrieve plan count" },
+        { status: 500, headers: corsHeaders }
+      );
+    }
+
+    if (count !== null && count >= 4) {
+      return NextResponse.json(
+        { error: "Plan limit reached. You can only create up to 4 plans." },
+        { status: 403, headers: corsHeaders }
+      );
+    }
+
+    // 4. Validate body
     const body = await request.json();
     const validation = createPlanSchema.safeParse(body);
     if (!validation.success) {
