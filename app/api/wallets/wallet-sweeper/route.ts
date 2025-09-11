@@ -94,13 +94,26 @@ export async function POST(request: NextRequest) {
     const { wallet_address } = validation.data;
 
     // 3. Verify user owns the wallet
-    const { data: walletOwner, error: ownerError } = await supabase
-      .from("wallets")
-      .select("plans(user_id)")
-      .eq("address", wallet_address)
-      .single();
+    const { data: walletData, error: walletError } = await supabase
+        .from("wallets")
+        .select("plan_id")
+        .eq("address", wallet_address)
+        .single();
 
-    if (ownerError || !walletOwner || !walletOwner.plans || walletOwner.plans[0].user_id !== user.id) {
+    if (walletError || !walletData) {
+        return NextResponse.json(
+            { error: "Wallet not found" },
+            { status: 404, headers: corsHeaders }
+        );
+    }
+
+    const { data: planData, error: planError } = await supabase
+        .from("plans")
+        .select("user_id")
+        .eq("id", walletData.plan_id)
+        .single();
+
+    if (planError || !planData || planData.user_id !== user.id) {
         return NextResponse.json(
             { error: "Forbidden: User does not own this wallet" },
             { status: 403, headers: corsHeaders }
