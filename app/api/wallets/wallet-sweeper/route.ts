@@ -88,10 +88,11 @@ export async function POST(request: NextRequest) {
     const privyAppSecret = process.env.PRIVY_APP_SECRET;
     const devWalletPublicKey = process.env.DEV_WALLET_PUBLIC_KEY;
 
+    console.log("privyAppId:", privyAppId);
+    console.log("privyAppSecret:", privyAppSecret ? "****" : "not set");
+
     if (!devPrivateKey || !devWalletPublicKey || !privyAppId || !privyAppSecret) {
       console.error("Missing server configuration for sweeping funds.");
-      console.log("privyAppId:", privyAppId);
-      console.log("privyAppSecret:", privyAppSecret ? "****" : "not set");
       throw new Error("Missing server configuration for sweeping funds.");
     }
 
