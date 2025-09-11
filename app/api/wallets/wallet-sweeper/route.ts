@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sendSplToken } from "../../../../lib/send_transaction";
 import { z } from "zod";
+import { sweepAllFunds } from "../../../../lib/SweepAllFunds";
 import supabase from "../../../../utils/supabase";
 import { logTransaction } from "../../../../lib/transaction_history";
 import { Connection, PublicKey } from "@solana/web3.js";
@@ -70,7 +70,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { signature, sweepAmount } = await sendSplToken(
+    const { signature, sweepAmount } = await sweepAllFunds(
       privy_id,
       wallet_address,
       balance
