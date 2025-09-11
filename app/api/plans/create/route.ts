@@ -171,7 +171,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 5. Create wallet via Privy
+    // 5. Create wallet
     const wallet = await createWallet();
 
     // 6. Update the webhook with the new wallet address
@@ -183,7 +183,6 @@ export async function POST(request: NextRequest) {
       .from("wallets")
       .insert({
         plan_id: newPlan.id,
-        privy_id: wallet.privyId,
         address: wallet.address,
         chain_type: "solana",
         balance: 0,

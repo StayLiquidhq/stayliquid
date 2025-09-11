@@ -8,8 +8,6 @@ const nextConfig: NextConfig = {
     WEBHOOK_URL: process.env.WEBHOOK_URL,
     HELIUS_WEBHOOK_ID: process.env.HELIUS_WEBHOOK_ID,
     DEV_WALLET_PRIVATE_KEY: process.env.DEV_WALLET_PRIVATE_KEY,
-    PRIVY_APP_ID: process.env.PRIVY_APP_ID,
-    PRIVY_APP_SECRET: process.env.PRIVY_APP_SECRET,
     PAYOUT_PRIVATE_KEY: process.env.PAYOUT_PRIVATE_KEY,
     USDC_MINT: process.env.USDC_MINT,
   },

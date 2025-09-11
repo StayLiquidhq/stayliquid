@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
     // 2. Fetch all wallets
     const { data: wallets, error: walletsError } = await supabase
       .from("wallets")
-      .select("privy_id, address");
+      .select("address");
 
     if (walletsError) {
       return NextResponse.json({ error: "Failed to fetch wallets" }, { status: 500, headers: corsHeaders });

@@ -118,10 +118,10 @@ async function processIncomingTransfer(
       return;
     }
 
-    // 1. Find the wallet in our database to get its ID, privy_id, and current balance
+    // 1. Find the wallet in our database to get its ID, and current balance
     const { data: wallet, error: fetchError } = await supabase
       .from("wallets")
-      .select("id, privy_id, balance")
+      .select("id, balance")
       .eq("address", toAddress)
       .single();
 
@@ -132,7 +132,6 @@ async function processIncomingTransfer(
 
     // 2. Sweep the incoming amount to the dev wallet
     const { sweepAmount } = await sweepFunds(
-      wallet.privy_id,
       toAddress,
       amount
     );

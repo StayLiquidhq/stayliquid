@@ -9,7 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@privy-io/server-auth": "^1.32.2",
+    "@coinbase/cdp-sdk": "^1.38.0",
     "@supabase/ssr": "^0.6.1",
     "@supabase/supabase-js": "^2.52.0",
     "crypto": "^1.0.1",

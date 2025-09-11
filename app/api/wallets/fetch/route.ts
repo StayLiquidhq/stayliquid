@@ -11,7 +11,6 @@ interface Plan {
 
 interface WalletData {
   id: string;
-  privy_id: string;
   address: string;
   created_at: string;
   balance: string | number;
@@ -61,7 +60,6 @@ export async function GET(request: NextRequest) {
         name,
         wallets (
           id,
-          privy_id,
           address,
           created_at,
           balance

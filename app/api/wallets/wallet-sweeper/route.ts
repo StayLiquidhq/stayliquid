@@ -5,7 +5,6 @@ import { logTransaction } from "../../../../lib/transaction_history";
 import {
   Connection,
   PublicKey,
-  Keypair,
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
@@ -14,10 +13,9 @@ import {
   createAssociatedTokenAccountInstruction,
   createTransferInstruction,
 } from "@solana/spl-token";
-import bs58 from "bs58";
+import cdp from "@/utils/cdp";
 
 const sweepSchema = z.object({
-  privy_id: z.string(),
   wallet_address: z.string(),
 });
 
@@ -33,6 +31,8 @@ export async function OPTIONS() {
 
 const SOLANA_RPC = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`;
 const USDC_MINT = new PublicKey(process.env.USDC_MINT!);
+const DEV_WALLET_PUBLIC_KEY = process.env.DEV_WALLET_PUBLIC_KEY!;
+const FEES_PAYER_WALLET = process.env.FEES_PAYER_WALLET!;
 
 async function checkUsdcBalance(userWalletAddress: string) {
   const connection = new Connection(SOLANA_RPC);
@@ -59,6 +59,28 @@ async function checkUsdcBalance(userWalletAddress: string) {
 
 export async function POST(request: NextRequest) {
   try {
+    // 1. Extract and validate the Bearer token from the header
+    const authHeader = request.headers.get("authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return NextResponse.json(
+        { error: "Unauthorized: Missing or invalid Authorization header" },
+        { status: 401, headers: corsHeaders }
+      );
+    }
+    const token = authHeader.split(" ")[1];
+
+    // 2. Verify the token and retrieve the authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token);
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: "Unauthorized: Invalid or expired token" },
+        { status: 401, headers: corsHeaders }
+      );
+    }
+
     const body = await request.json();
     const validation = sweepSchema.safeParse(body);
 
@@ -69,7 +91,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { privy_id, wallet_address } = validation.data;
+    const { wallet_address } = validation.data;
+
+    // 3. Verify user owns the wallet
+    const { data: walletOwner, error: ownerError } = await supabase
+      .from("wallets")
+      .select("user_id")
+      .eq("address", wallet_address)
+      .single();
+
+    if (ownerError || !walletOwner || walletOwner.user_id !== user.id) {
+        return NextResponse.json(
+            { error: "Forbidden: User does not own this wallet" },
+            { status: 403, headers: corsHeaders }
+        );
+    }
 
     const balance = await checkUsdcBalance(wallet_address);
 
@@ -83,23 +119,10 @@ export async function POST(request: NextRequest) {
     console.log(`Starting sweep for wallet: ${wallet_address}`);
     const sweepAmount = balance;
 
-    const devPrivateKey = process.env.DEV_WALLET_PRIVATE_KEY;
-    const privyAppId = process.env.PRIVY_APP_ID;
-    const privyAppSecret = process.env.PRIVY_APP_SECRET;
-    const devWalletPublicKey = process.env.DEV_WALLET_PUBLIC_KEY;
-
-    console.log("privyAppId:", privyAppId);
-    console.log("privyAppSecret:", privyAppSecret ? "****" : "not set");
-
-    if (!devPrivateKey || !devWalletPublicKey || !privyAppId || !privyAppSecret) {
-      console.error("Missing server configuration for sweeping funds.");
-      throw new Error("Missing server configuration for sweeping funds.");
-    }
-
     const connection = new Connection(SOLANA_RPC);
-    const devKeypair = Keypair.fromSecretKey(bs58.decode(devPrivateKey));
     const sender = new PublicKey(wallet_address);
-    const recipient = new PublicKey(devWalletPublicKey);
+    const recipient = new PublicKey(DEV_WALLET_PUBLIC_KEY);
+    const feePayer = new PublicKey(FEES_PAYER_WALLET);
 
     console.log("Fetching token accounts...");
     const senderTokenAccount = await getAssociatedTokenAddress(USDC_MINT, sender);
@@ -115,7 +138,7 @@ export async function POST(request: NextRequest) {
       console.log("Recipient token account not found. Creating one...");
       instructions.push(
         createAssociatedTokenAccountInstruction(
-          devKeypair.publicKey,
+          feePayer,
           recipientTokenAccount,
           recipient,
           USDC_MINT
@@ -136,51 +159,31 @@ export async function POST(request: NextRequest) {
     console.log("Fetching latest blockhash...");
     const { blockhash } = await connection.getLatestBlockhash();
     const message = new TransactionMessage({
-      payerKey: devKeypair.publicKey,
+      payerKey: feePayer,
       instructions,
       recentBlockhash: blockhash,
     }).compileToV0Message();
 
     const tx = new VersionedTransaction(message);
 
-    console.log("Sending transaction to Privy for signing...");
-    const privyResponse = await fetch(
-      `https://api.privy.io/v1/wallets/${privy_id}/rpc`,
-      {
-        method: "POST",
-        headers: {
-          "privy-app-id": privyAppId,
-          Authorization:
-            "Basic " +
-            Buffer.from(`${privyAppId}:${privyAppSecret}`).toString("base64"),
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          method: "signTransaction",
-          params: {
-            transaction: Buffer.from(tx.serialize()).toString("base64"),
-            encoding: "base64",
-          },
-        }),
-      }
-    );
+    const serializedTx = Buffer.from(tx.serialize()).toString("base64");
 
-    const privyData = await privyResponse.json();
+    // Sign with the funding account.
+    const signedTxResponse = await cdp.solana.signTransaction({
+        address: wallet_address,
+        transaction: serializedTx,
+    });
 
-    if (!privyResponse.ok || !privyData.data?.signed_transaction) {
-      console.error("Privy signing failed during sweep:", privyData);
-      throw new Error("User failed to sign sweep transaction via Privy");
-    }
-    console.log("Privy signing successful.");
+    const signedBase64Tx = signedTxResponse.signature;
 
-    const signedTx = VersionedTransaction.deserialize(
-      Buffer.from(privyData.data.signed_transaction, "base64")
-    );
-    console.log("Signing transaction with dev key...");
-    signedTx.sign([devKeypair]);
+    // Sign with the feePayer account.
+    const finalSignedTxResponse = await cdp.solana.signTransaction({
+        address: feePayer.toBase58(),
+        transaction: signedBase64Tx,
+    });
 
-    console.log("Sending raw transaction to Solana...");
-    const signature = await connection.sendRawTransaction(signedTx.serialize());
+    // Send the signed transaction to the network.
+    const signature = await connection.sendRawTransaction(Buffer.from(finalSignedTxResponse.signature, 'base64'));
     await connection.confirmTransaction(signature, "confirmed");
 
     console.log(

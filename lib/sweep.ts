@@ -1,38 +1,24 @@
-import { Connection, PublicKey, Transaction, Keypair } from "@solana/web3.js";
-import bs58 from "bs58";
+import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
   createTransferInstruction,
 } from "@solana/spl-token";
+import cdp from "@/utils/cdp";
 
 const SOLANA_RPC = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`;
 const USDC_MINT = new PublicKey(process.env.USDC_MINT!);
+const DEV_WALLET_PUBLIC_KEY = process.env.DEV_WALLET_PUBLIC_KEY!;
+const FEES_PAYER_WALLET = process.env.FEES_PAYER_WALLET!;
 
 export async function sweepFunds(
-  userPrivyId: string,
   userWalletAddress: string,
   amount: number
 ) {
-  const devPrivateKey = process.env.DEV_WALLET_PRIVATE_KEY;
-  const privyAppId = process.env.PRIVY_APP_ID;
-  const privyAppSecret = process.env.PRIVY_APP_SECRET;
-  const devWalletPublicKey = process.env.DEV_WALLET_PUBLIC_KEY;
-
-  if (!devPrivateKey || !privyAppId || !privyAppSecret || !devWalletPublicKey) {
-    throw new Error("Missing server configuration for sweeping funds.");
-  }
-  console.log(
-    "privyAppId:",
-    privyAppId,
-    "privyAppSecret:",
-    privyAppSecret ? "****" : "not set"
-  );
-
   const connection = new Connection(SOLANA_RPC);
-  const devKeypair = Keypair.fromSecretKey(bs58.decode(devPrivateKey));
   const sender = new PublicKey(userWalletAddress);
-  const recipient = new PublicKey(devWalletPublicKey);
+  const recipient = new PublicKey(DEV_WALLET_PUBLIC_KEY);
+  const feePayer = new PublicKey(FEES_PAYER_WALLET);
 
   const senderTokenAccount = await getAssociatedTokenAddress(USDC_MINT, sender);
   const recipientTokenAccount = await getAssociatedTokenAddress(
@@ -48,7 +34,7 @@ export async function sweepFunds(
   if (!recipientInfo) {
     tx.add(
       createAssociatedTokenAccountInstruction(
-        devKeypair.publicKey,
+        feePayer,
         recipientTokenAccount,
         recipient,
         USDC_MINT
@@ -65,47 +51,30 @@ export async function sweepFunds(
     )
   );
 
-  tx.feePayer = devKeypair.publicKey;
+  tx.feePayer = feePayer;
   tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
-  const encoded = Buffer.from(`${privyAppId}:${privyAppSecret}`).toString(
-    "base64"
-  );
-  console.log(`encoding transaction for signing ${userPrivyId}`);
-  console.log(`transaction encoded: ${encoded}`);
-  const privyResponse = await fetch(
-    `https://api.privy.io/v1/wallets/${userPrivyId}/rpc`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Basic ${encoded}`,
-        "privy-app-id": privyAppId,
-      },
-      body: JSON.stringify({
-        method: "signTransaction",
-        params: {
-          transaction: tx
-            .serialize({ requireAllSignatures: false })
-            .toString("base64"),
-          encoding: "base64",
-        },
-      }),
-    }
-  );
+  const serializedTx = Buffer.from(
+    tx.serialize({ requireAllSignatures: false })
+  ).toString("base64");
 
-  const privyData = await privyResponse.json();
-  if (!privyData.data?.signed_transaction) {
-    console.error("Privy signing failed during sweep:", privyData);
-    throw new Error("User failed to sign sweep transaction via Privy");
-  }
+  // Sign with the funding account.
+  const signedTxResponse = await cdp.solana.signTransaction({
+    address: userWalletAddress,
+    transaction: serializedTx,
+  });
 
-  const signedTx = Transaction.from(
-    Buffer.from(privyData.data.signed_transaction, "base64")
-  );
-  signedTx.partialSign(devKeypair);
+  const signedBase64Tx = signedTxResponse.signature;
 
-  const signature = await connection.sendRawTransaction(signedTx.serialize());
+  // Sign with the feePayer account.
+  const finalSignedTxResponse = await cdp.solana.signTransaction({
+    address: feePayer.toBase58(),
+    transaction: signedBase64Tx,
+  });
+
+  // Send the signed transaction to the network.
+  const signature = await connection.sendRawTransaction(Buffer.from(finalSignedTxResponse.signature, 'base64'));
+
   await connection.confirmTransaction(signature, "confirmed");
 
   console.log(
