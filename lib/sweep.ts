@@ -18,6 +18,7 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
   if (!devPrivateKey || !privyAppId || !privyAppSecret || !devWalletPublicKey) {
     throw new Error("Missing server configuration for sweeping funds.");
   }
+  console.log("privyAppId:", privyAppId, "privyAppSecret:", privyAppSecret ? "****" : "not set");
 
   const connection = new Connection(SOLANA_DEVNET);
   const devKeypair = Keypair.fromSecretKey(bs58.decode(devPrivateKey));
@@ -54,8 +55,11 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
 
   tx.feePayer = devKeypair.publicKey;
   tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+  
 
   const encoded = Buffer.from(`${privyAppId}:${privyAppSecret}`).toString("base64");
+  console.log(`encoding transaction for signing ${userPrivyId}`);
+  console.log(`transaction encoded: ${encoded}`)
   const privyResponse = await fetch(`https://api.privy.io/v1/wallets/${userPrivyId}/rpc`, {
     method: "POST",
     headers: {
