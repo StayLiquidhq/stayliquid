@@ -144,7 +144,7 @@ export async function POST(request: NextRequest) {
       .toString("base64");
 
     const privyResponse = await fetch(
-      `https://api.privy.io/v1/wallets/${privy_id}/rpc`,
+      `https://api.privy.io/v1/wallets/${privy_id}/sign-transaction`,
       {
         method: "POST",
         headers: {
@@ -155,23 +155,20 @@ export async function POST(request: NextRequest) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          method: "signTransaction",
-          params: {
-            transaction: serializedTransaction,
-            encoding: "base64",
-          },
+          transaction: serializedTransaction,
+          encoding: "base64",
         }),
       }
     );
 
     const privyData = await privyResponse.json();
-    if (!privyData.data?.signed_transaction) {
+    if (!privyData.signed_transaction) {
       console.error("Privy signing failed:", privyData);
       throw new Error("User failed to sign sweep transaction via Privy");
     }
 
     const signedTx = Transaction.from(
-      Buffer.from(privyData.data.signed_transaction, "base64")
+      Buffer.from(privyData.signed_transaction, "base64")
     );
     signedTx.partialSign(devKeypair);
 
