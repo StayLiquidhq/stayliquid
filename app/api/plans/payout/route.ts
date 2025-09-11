@@ -15,7 +15,7 @@ import {
 } from "@solana/spl-token";
 import { logTransaction } from "../../../../lib/transaction_history";
 
-const SOLANA_DEVNET = "https://api.devnet.solana.com";
+const SOLANA_DEVNET = `https://devnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
 const USDC_DEVNET_MINT = new PublicKey(
   "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 );

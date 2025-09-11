@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendSplToken } from "../../../../lib/send_transaction";
-import { sweepFunds } from "../../../../lib/sweep";
 import { z } from "zod";
 import supabase from "../../../../utils/supabase";
 import { logTransaction } from "../../../../lib/transaction_history";
@@ -22,7 +21,7 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders });
 }
 
-const SOLANA_DEVNET = "https://api.devnet.solana.com";
+const SOLANA_DEVNET = `https://devnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
 const USDC_DEVNET_MINT = new PublicKey(
   "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 );
@@ -73,7 +72,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-        const { signature, sweepAmount } = await sweepFunds(
+        const { signature, sweepAmount } = await sendSplToken(
           privy_id,
           wallet_address,
           balance
