@@ -6,8 +6,7 @@ import {
   Connection,
   PublicKey,
   Keypair,
-  VersionedTransaction,
-  TransactionMessage,
+  Transaction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import {
@@ -136,16 +135,13 @@ export async function POST(request: NextRequest) {
     );
 
     const { blockhash } = await connection.getLatestBlockhash();
-    const message = new TransactionMessage({
-      payerKey: devPublicKey,
+    const transaction = new Transaction({
       recentBlockhash: blockhash,
-      instructions,
-    }).compileToV0Message();
-
-    const transaction = new VersionedTransaction(message);
-    const serializedTransaction = Buffer.from(transaction.serialize()).toString(
-      "base64"
-    );
+      feePayer: devPublicKey,
+    }).add(...instructions);
+    const serializedTransaction = transaction
+      .serialize({ requireAllSignatures: false })
+      .toString("base64");
 
     const privyResponse = await fetch(
       `https://api.privy.io/v1/wallets/${privy_id}/rpc`,
@@ -174,12 +170,12 @@ export async function POST(request: NextRequest) {
       throw new Error("User failed to sign sweep transaction via Privy");
     }
 
-    const signedTx = VersionedTransaction.deserialize(
+    const signedTx = Transaction.from(
       Buffer.from(privyData.data.signed_transaction, "base64")
     );
-    signedTx.sign([devKeypair]);
+    signedTx.partialSign(devKeypair);
 
-    const signature = await connection.sendTransaction(signedTx);
+    const signature = await connection.sendRawTransaction(signedTx.serialize());
     await connection.confirmTransaction(signature, "confirmed");
 
     if (signature && sweepAmount > 0) {
