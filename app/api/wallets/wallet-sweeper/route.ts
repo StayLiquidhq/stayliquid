@@ -96,11 +96,11 @@ export async function POST(request: NextRequest) {
     // 3. Verify user owns the wallet
     const { data: walletOwner, error: ownerError } = await supabase
       .from("wallets")
-      .select("user_id")
+      .select("plans(user_id)")
       .eq("address", wallet_address)
       .single();
 
-    if (ownerError || !walletOwner || walletOwner.user_id !== user.id) {
+    if (ownerError || !walletOwner || !walletOwner.plans || walletOwner.plans[0].user_id !== user.id) {
         return NextResponse.json(
             { error: "Forbidden: User does not own this wallet" },
             { status: 403, headers: corsHeaders }
