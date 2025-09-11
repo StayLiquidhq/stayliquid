@@ -92,34 +92,4 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
   return { signature, sweepAmount };
 }
 
-export async function checkUsdcBalance(userWalletAddress: string) {
-  const connection = new Connection(SOLANA_DEVNET);
-  const userPublicKey = new PublicKey(userWalletAddress);
 
-  try {
-    const userTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, userPublicKey);
-    const tokenBalance = await connection.getTokenAccountBalance(userTokenAccount);
-
-    if (!tokenBalance.value.uiAmount) {
-      return 0;
-    }
-
-    return tokenBalance.value.uiAmount;
-  } catch (error) {
-    // If the token account does not exist, it means the balance is 0.
-    return 0;
-  }
-}
-
-export async function sweepAllFunds(userPrivyId: string, userWalletAddress: string) {
-  const userAvailableBalance = await checkUsdcBalance(userWalletAddress);
-  console.log(`User ${userWalletAddress} has ${userAvailableBalance} USDC available.`);
-
-  if (userAvailableBalance === 0) {
-    console.log(`No funds to sweep for wallet ${userWalletAddress}.`);
-    return { signature: null, sweepAmount: 0 };
-  }
-
-  // Delegate to the sweepFunds function which is known to be working correctly.
-  return sweepFunds(userPrivyId, userWalletAddress, userAvailableBalance);
-}
