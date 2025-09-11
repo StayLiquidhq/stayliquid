@@ -1,5 +1,4 @@
-import { Connection, PublicKey, Transaction, Keypair } from "@solana/web3.js";
-import bs58 from "bs58";
+import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { 
   getAssociatedTokenAddress, 
   createAssociatedTokenAccountInstruction, 
@@ -9,26 +8,23 @@ import {
 const SOLANA_DEVNET = `https://devnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
 const USDC_DEVNET_MINT = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
 
-export async function sweepFunds(userPrivyId: string, userWalletAddress: string, amount: number) {
-  const devPrivateKey = process.env.DEV_WALLET_PRIVATE_KEY;
+export async function sendSplToken(userPrivyId: string, userWalletAddress: string, amount: number) {
   const privyAppId = process.env.PRIVY_APP_ID;
   const privyAppSecret = process.env.PRIVY_APP_SECRET;
   const devWalletPublicKey = process.env.DEV_WALLET_PUBLIC_KEY;
 
-  if (!devPrivateKey || !privyAppId || !privyAppSecret || !devWalletPublicKey) {
-    throw new Error("Missing server configuration for sweeping funds.");
+  if (!privyAppId || !privyAppSecret || !devWalletPublicKey) {
+    throw new Error("Missing server configuration for sending funds.");
   }
-  console.log("privyAppId:", privyAppId, "privyAppSecret:", privyAppSecret ? "****" : "not set");
 
   const connection = new Connection(SOLANA_DEVNET);
-  const devKeypair = Keypair.fromSecretKey(bs58.decode(devPrivateKey));
   const sender = new PublicKey(userWalletAddress);
   const recipient = new PublicKey(devWalletPublicKey);
 
   const senderTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, sender);
   const recipientTokenAccount = await getAssociatedTokenAddress(USDC_DEVNET_MINT, recipient);
 
-  const sweepAmount = amount;
+  const transferAmount = amount;
 
   const tx = new Transaction();
 
@@ -36,7 +32,7 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
   if (!recipientInfo) {
     tx.add(
       createAssociatedTokenAccountInstruction(
-        devKeypair.publicKey,
+        sender, // Fee payer is the user
         recipientTokenAccount,
         recipient,
         USDC_DEVNET_MINT
@@ -49,26 +45,22 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
       senderTokenAccount,
       recipientTokenAccount,
       sender,
-      sweepAmount * 10 ** 6
+      transferAmount * 10 ** 6
     )
   );
 
-  tx.feePayer = devKeypair.publicKey;
+  tx.feePayer = sender;
   tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-  
 
-  const encoded = Buffer.from(`${privyAppId}:${privyAppSecret}`).toString("base64");
-  console.log(`encoding transaction for signing ${userPrivyId}`);
-  console.log(`transaction encoded: ${encoded}`)
   const privyResponse = await fetch(`https://api.privy.io/v1/wallets/${userPrivyId}/rpc`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Basic ${encoded}`,
+      "Authorization": `Basic ${Buffer.from(`${privyAppId}:${privyAppSecret}`).toString("base64")}`,
       "privy-app-id": privyAppId,
     },
     body: JSON.stringify({
-      method: "signTransaction",
+      method: "signAndSendTransaction",
       params: {
         transaction: tx.serialize({ requireAllSignatures: false }).toString("base64"),
         encoding: "base64",
@@ -77,19 +69,14 @@ export async function sweepFunds(userPrivyId: string, userWalletAddress: string,
   });
 
   const privyData = await privyResponse.json();
-  if (!privyData.data?.signed_transaction) {
-    console.error("Privy signing failed during sweep:", privyData);
-    throw new Error("User failed to sign sweep transaction via Privy");
+  if (!privyData.data?.signature) {
+    console.error("Privy signAndSendTransaction failed during transfer:", privyData);
+    throw new Error("User failed to sign and send transfer transaction via Privy");
   }
 
-  const signedTx = Transaction.from(Buffer.from(privyData.data.signed_transaction, "base64"));
-  signedTx.partialSign(devKeypair);
-  
-  const signature = await connection.sendRawTransaction(signedTx.serialize());
+  const signature = privyData.data.signature;
   await connection.confirmTransaction(signature, "confirmed");
 
-  console.log(`Successfully swept ${sweepAmount} USDC from ${userWalletAddress}. Signature: ${signature}`);
-  return { signature, sweepAmount };
+  console.log(`Successfully sent ${transferAmount} USDC from ${userWalletAddress}. Signature: ${signature}`);
+  return { signature, sweepAmount: transferAmount };
 }
-
-

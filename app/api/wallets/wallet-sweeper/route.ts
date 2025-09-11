@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { sendSplToken } from "../../../../lib/send_transaction";
 import { sweepFunds } from "../../../../lib/sweep";
 import { z } from "zod";
 import supabase from "../../../../utils/supabase";
@@ -72,11 +73,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { signature, sweepAmount } = await sweepFunds(
-      privy_id,
-      wallet_address,
-      balance
-    );
+        const { signature, sweepAmount } = await sweepFunds(
+          privy_id,
+          wallet_address,
+          balance
+        );
 
     if (signature && sweepAmount > 0) {
       const { error: claimError } = await supabase
