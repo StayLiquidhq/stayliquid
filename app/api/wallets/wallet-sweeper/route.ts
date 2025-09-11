@@ -1,20 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { sweepFunds } from "../../../../lib/sweep";
 import { z } from "zod";
 import supabase from "../../../../utils/supabase";
 import { logTransaction } from "../../../../lib/transaction_history";
-import {
-  Connection,
-  PublicKey,
-  Keypair,
-  VersionedTransaction,
-  TransactionMessage,
-} from "@solana/web3.js";
-import bs58 from "bs58";
-import {
-  getAssociatedTokenAddress,
-  createAssociatedTokenAccountInstruction,
-  createTransferInstruction,
-} from "@solana/spl-token";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { getAssociatedTokenAddress } from "@solana/spl-token";
 
 const sweepSchema = z.object({
   privy_id: z.string(),
@@ -73,114 +63,20 @@ export async function POST(request: NextRequest) {
 
     const { privy_id, wallet_address } = validation.data;
 
-    const devPrivateKey = process.env.DEV_WALLET_PRIVATE_KEY;
-    const privyAppId = process.env.PRIVY_APP_ID;
-    const privyAppSecret = process.env.PRIVY_APP_SECRET;
-    const devWalletPublicKey = process.env.DEV_WALLET_PUBLIC_KEY;
+    const balance = await checkUsdcBalance(wallet_address);
 
-    if (
-      !devPrivateKey ||
-      !privyAppId ||
-      !privyAppSecret ||
-      !devWalletPublicKey
-    ) {
-      throw new Error("Missing server configuration for sweeping funds.");
-    }
-
-    const sweepAmount = await checkUsdcBalance(wallet_address);
-    if (sweepAmount === 0) {
-      console.log("No USDC balance to sweep.");
+    if (balance === 0) {
       return NextResponse.json(
-        { signature: null, sweepAmount: 0 },
+        { signature: null, sweepAmount: 0, message: "No balance to sweep" },
         { headers: corsHeaders }
       );
     }
 
-    const connection = new Connection(SOLANA_DEVNET);
-    const devKeypair = Keypair.fromSecretKey(bs58.decode(devPrivateKey));
-    const userPublicKey = new PublicKey(wallet_address);
-    const devPublicKey = new PublicKey(devWalletPublicKey);
-
-    const instructions = [];
-
-    const userTokenAccount = await getAssociatedTokenAddress(
-      USDC_DEVNET_MINT,
-      userPublicKey
+    const { signature, sweepAmount } = await sweepFunds(
+      privy_id,
+      wallet_address,
+      balance
     );
-    const devTokenAccount = await getAssociatedTokenAddress(
-      USDC_DEVNET_MINT,
-      devPublicKey
-    );
-
-    const devTokenAccountInfo = await connection.getAccountInfo(
-      devTokenAccount
-    );
-    if (!devTokenAccountInfo) {
-      instructions.push(
-        createAssociatedTokenAccountInstruction(
-          devPublicKey,
-          devTokenAccount,
-          devPublicKey,
-          USDC_DEVNET_MINT
-        )
-      );
-    }
-
-    instructions.push(
-      createTransferInstruction(
-        userTokenAccount,
-        devTokenAccount,
-        userPublicKey,
-        sweepAmount * 10 ** 6
-      )
-    );
-
-    const { blockhash } = await connection.getLatestBlockhash();
-    const message = new TransactionMessage({
-      payerKey: devPublicKey,
-      recentBlockhash: blockhash,
-      instructions,
-    }).compileToV0Message();
-
-    const transaction = new VersionedTransaction(message);
-    const serializedTransaction = Buffer.from(transaction.serialize()).toString(
-      "base64"
-    );
-
-    const privyResponse = await fetch(
-      `https://api.privy.io/v1/wallets/${privy_id}/rpc`,
-      {
-        method: "POST",
-        headers: {
-          "privy-app-id": privyAppId,
-          Authorization: `Basic ${Buffer.from(
-            `${privyAppId}:${privyAppSecret}`
-          ).toString("base64")}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          method: "signTransaction",
-          params: {
-            transaction: serializedTransaction,
-            encoding: "base64",
-          },
-        }),
-      }
-    );
-
-    const privyData = await privyResponse.json();
-    if (!privyData.data?.signed_transaction) {
-      console.error("Privy signing failed:", privyData);
-      throw new Error("User failed to sign sweep transaction via Privy");
-    }
-
-    const signedTx = VersionedTransaction.deserialize(
-      Buffer.from(privyData.data.signed_transaction, "base64")
-    );
-    signedTx.sign([devKeypair]);
-
-    const signature = await connection.sendTransaction(signedTx);
-    await connection.confirmTransaction(signature, "confirmed");
 
     if (signature && sweepAmount > 0) {
       const { error: claimError } = await supabase
