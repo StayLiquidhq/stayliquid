@@ -116,7 +116,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 5. Calculate fees and payout
-    const feeAmount = totalAmount * 0.02;
+    const feeAmount = totalAmount * 0.05;
     const payoutAmount = totalAmount - feeAmount;
 
     // 6. Environment variables and keypairs
