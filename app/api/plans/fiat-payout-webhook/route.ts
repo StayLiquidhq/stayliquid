@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import supabase from "../../../../utils/supabase";
 import { logTransaction } from "../../../../lib/transaction_history";
-import { sweepFunds } from "../../../../lib/sweep";
 import { z } from "zod";
+import { decrementBalance, incrementBalance } from "../../../../lib/balance";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -55,7 +55,10 @@ export async function POST(request: NextRequest) {
 
     // 3. Sweep funds from the user's wallet
     try {
-      await sweepFunds(user_wallet_address, amount);
+      console.log(`Sweeping funds for plan ${plan_id}:`, {
+        user_wallet_address,
+        amount,
+      });
     } catch (sweepError) {
       console.error(`Failed to sweep funds for plan ${plan_id}:`, sweepError);
       return NextResponse.json(
@@ -64,7 +67,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 4. Log the fiat transaction
+    // 4. Atomically decrement wallet balance with idempotency
+    const idempotencyKey = `fiat:${fiat_transaction_id}`;
+    const { error: decError } = await decrementBalance({
+      walletId: wallet_id,
+      amount,
+      idempotencyKey,
+    });
+
+    if (decError) {
+      console.error(
+        `CRITICAL: Funds swept but failed to decrement balance for wallet ${wallet_id}.`,
+        decError
+      );
+      return NextResponse.json(
+        { error: "Failed to update wallet balance after sweeping funds" },
+        { status: 500, headers: corsHeaders }
+      );
+    }
+
+    // 5. Log the fiat transaction
     const { error: logError } = await logTransaction({
       wallet_id,
       type: "debit",
@@ -75,7 +97,12 @@ export async function POST(request: NextRequest) {
     });
 
     if (logError) {
-      // Note: At this point, funds have been swept. This is a critical state.
+      // At this point, funds have been swept and balance decremented. Compensate by re-incrementing.
+      await incrementBalance({
+        walletId: wallet_id,
+        amount,
+        idempotencyKey: `${idempotencyKey}:compensation`,
+      });
       console.error(
         `CRITICAL: Funds swept but failed to log transaction for plan ${plan_id}.`
       );
@@ -85,7 +112,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 5. Fetch the plan to determine how to update it
+    // 6. Fetch the plan to determine how to update it
     const { data: plan, error: planError } = await supabase
       .from("plans")
       .select("plan_type, frequency")
@@ -102,7 +129,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 6. Update the plan based on its type
+    // 7. Update the plan based on its type
     if (plan.plan_type === "target") {
       const { error: updateError } = await supabase
         .from("plans")
