@@ -89,39 +89,8 @@ export async function POST(request: NextRequest) {
 
     // Handle manual fiat payouts
     if (plan.payout_method === "fiat") {
-      console.log(`Processing manual fiat payout for plan_id: ${plan_id}.`);
-      const now = new Date();
-      let next_payout_date: Date | null = new Date(now);
-
-      switch (plan.frequency.toLowerCase()) {
-        case "daily":
-          next_payout_date.setDate(next_payout_date.getDate() + 1);
-          break;
-        case "weekly":
-          next_payout_date.setDate(next_payout_date.getDate() + 7);
-          break;
-        case "monthly":
-          next_payout_date.setMonth(next_payout_date.getMonth() + 1);
-          break;
-        default:
-          next_payout_date = null;
-          break;
-      }
-
-      const { error: updateError } = await supabase
-        .from("plans")
-        .update({
-          last_payout_date: now.toISOString(),
-          next_payout_date: next_payout_date ? next_payout_date.toISOString() : null,
-        })
-        .eq("id", plan_id);
-
-      if (updateError) {
-        console.error(`Failed to update payout dates for fiat plan ${plan_id}:`, updateError);
-        return NextResponse.json({ error: "Failed to update plan dates for fiat payout" }, { status: 500, headers: corsHeaders });
-      }
-
-      return NextResponse.json({ success: true, message: "Fiat payout logged for manual processing." }, { headers: corsHeaders });
+      console.log(`Plan ${plan_id} is a fiat payout. Skipping automated crypto transaction.`);
+      return NextResponse.json({ success: true, message: "Fiat payout skipped, handled by webhook." }, { headers: corsHeaders });
     }
 
     // Proceed with crypto payout
@@ -237,8 +206,15 @@ export async function POST(request: NextRequest) {
     tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
     // 7. Sign and send the transaction
-    const signature = await connection.sendTransaction(tx, [payoutKeypair]);
-    await connection.confirmTransaction(signature, "confirmed");
+    let signature: string;
+    try {
+        signature = await connection.sendTransaction(tx, [payoutKeypair]);
+        await connection.confirmTransaction(signature, "confirmed");
+    } catch (error) {
+        console.error("Solana transaction failed:", error);
+        // If the transaction fails, we do not proceed with database updates.
+        return NextResponse.json({ error: "Transaction failed to send or confirm." }, { status: 500, headers: corsHeaders });
+    }
 
     // Idempotency: claim this payout's signature upfront. Requires unique constraint on processed_transactions.signature
     const { error: claimError } = await supabase

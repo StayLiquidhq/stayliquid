@@ -7,6 +7,7 @@ interface LogTransactionParams {
   currency: string;
   description: string;
   solana_signature?: string;
+  fiat_transaction_id?: string;
 }
 
 /**
@@ -23,6 +24,7 @@ export async function logTransaction(params: LogTransactionParams): Promise<{ er
       currency: params.currency,
       description: params.description,
       solana_signature: params.solana_signature,
+      fiat_transaction_id: params.fiat_transaction_id,
     });
 
   if (error) {

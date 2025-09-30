@@ -92,18 +92,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 4. Atomically fetch and reset the user's balance
-    const { data: totalAmount, error: rpcError } = await supabase.rpc(
-      "reset_wallet_balance",
-      { p_wallet_id: walletId }
-    );
+    // 4. Fetch the current balance without resetting it yet
+    const { data: wallet, error: walletError } = await supabase
+      .from('wallets')
+      .select('balance')
+      .eq('id', walletId)
+      .single();
 
-    if (rpcError || totalAmount === null) {
-      return NextResponse.json(
-        { error: "Failed to fetch or reset balance" },
-        { status: 500, headers: corsHeaders }
-      );
+    if (walletError || !wallet) {
+        return NextResponse.json({ error: 'Failed to fetch wallet balance' }, { status: 500, headers: corsHeaders });
     }
+
+    const totalAmount = wallet.balance;
 
     if (totalAmount <= 0) {
       return NextResponse.json(
@@ -181,8 +181,28 @@ export async function POST(request: NextRequest) {
     tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
 
     // 8. Sign and send the transaction
-    const signature = await connection.sendTransaction(tx, [payoutKeypair]);
-    await connection.confirmTransaction(signature, "confirmed");
+    let signature: string;
+    try {
+        signature = await connection.sendTransaction(tx, [payoutKeypair]);
+        await connection.confirmTransaction(signature, "confirmed");
+    } catch (error) {
+        console.error("Solana transaction failed:", error);
+        // IMPORTANT: Since the transaction failed, we do not proceed. The user's balance was never reset.
+        return NextResponse.json({ error: "Transaction failed to send or confirm." }, { status: 500, headers: corsHeaders });
+    }
+
+    // 9. Atomically reset the user's balance AFTER successful transaction
+    const { error: rpcError } = await supabase.rpc(
+      "reset_wallet_balance",
+      { p_wallet_id: walletId }
+    );
+
+    if (rpcError) {
+        console.error(`CRITICAL: Transaction ${signature} succeeded, but failed to reset wallet balance for wallet ${walletId}. Manual intervention required.`);
+        // At this point, the user has been paid, but their balance is not zeroed in the DB.
+        // This is a critical state that requires manual monitoring and intervention.
+        // For this implementation, we will proceed but log the error.
+    }
 
     // Idempotency: claim this payout's signature upfront. Requires unique constraint on processed_transactions.signature
     const { error: claimError } = await supabase
