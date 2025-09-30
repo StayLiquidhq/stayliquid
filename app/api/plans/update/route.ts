@@ -97,6 +97,16 @@ export async function POST(request: NextRequest) {
       (updateData as any).next_payout_date = now.toISOString();
     }
 
+    // If payout_method is being updated, nullify the other method's fields
+    if (updateData.payout_method === 'fiat') {
+        (updateData as any).payout_wallet_address = null;
+    } else if (updateData.payout_method === 'crypto') {
+        (updateData as any).payout_account_number = null;
+        (updateData as any).bank_name = null;
+        (updateData as any).account_name = null;
+        (updateData as any).bank_code = null;
+    }
+
     console.log(`updating plan ${plan_id} for user ${user.id} with data:`, updateData);
     // 3. Update plan
     const { data: updatedPlan, error: planError } = await supabase
