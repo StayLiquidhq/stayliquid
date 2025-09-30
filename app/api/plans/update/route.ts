@@ -28,6 +28,7 @@ const updatePlanSchema = z.object({
   payout_account_number: z.string().min(1).optional(),
   bank_name: z.string().min(1).optional(),
   account_name: z.string().min(1).optional(),
+  bank_code: z.string().min(1).optional(),
   payout_wallet_address: z.string().min(1).optional(),
 });
 
@@ -52,6 +53,49 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: validation.error.format() }, { status: 400, headers: corsHeaders });
     }
     const { plan_id, ...updateData } = validation.data;
+
+    // Recalculate next_payout_date if frequency or payout_time is updated
+    if (updateData.frequency && updateData.payout_time) {
+      const { frequency, payout_time } = updateData;
+      const now = new Date();
+      now.setSeconds(0, 0);
+
+      switch (frequency.toLowerCase()) {
+        case "daily":
+          const [hours, minutes] = payout_time.split(":").map(Number);
+          now.setHours(hours, minutes);
+          if (now < new Date()) {
+            now.setDate(now.getDate() + 1);
+          }
+          break;
+        case "weekly":
+          const weekdays = [
+            "sunday",
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+          ];
+          const targetDay = weekdays.indexOf(payout_time.toLowerCase());
+          const currentDay = now.getDay();
+          let dayDifference = targetDay - currentDay;
+          if (dayDifference < 0) {
+            dayDifference += 7;
+          }
+          now.setDate(now.getDate() + dayDifference);
+          break;
+        case "monthly":
+          const targetDate = parseInt(payout_time, 10);
+          now.setDate(targetDate);
+          if (now < new Date()) {
+            now.setMonth(now.getMonth() + 1);
+          }
+          break;
+      }
+      (updateData as any).next_payout_date = now.toISOString();
+    }
 
     console.log(`updating plan ${plan_id} for user ${user.id} with data:`, updateData);
     // 3. Update plan

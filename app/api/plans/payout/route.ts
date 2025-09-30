@@ -57,6 +57,7 @@ export async function POST(request: NextRequest) {
       .from("plans")
       .select(
         `
+        payout_method,
         payout_wallet_address,
         recurrent_payout,
         frequency,
@@ -84,9 +85,47 @@ export async function POST(request: NextRequest) {
     }
 
     const wallet = plan.wallets[0];
-    const recipientAddress = plan.payout_wallet_address;
     const payoutAmount = plan.recurrent_payout;
 
+    // Handle manual fiat payouts
+    if (plan.payout_method === "fiat") {
+      console.log(`Processing manual fiat payout for plan_id: ${plan_id}.`);
+      const now = new Date();
+      let next_payout_date: Date | null = new Date(now);
+
+      switch (plan.frequency.toLowerCase()) {
+        case "daily":
+          next_payout_date.setDate(next_payout_date.getDate() + 1);
+          break;
+        case "weekly":
+          next_payout_date.setDate(next_payout_date.getDate() + 7);
+          break;
+        case "monthly":
+          next_payout_date.setMonth(next_payout_date.getMonth() + 1);
+          break;
+        default:
+          next_payout_date = null;
+          break;
+      }
+
+      const { error: updateError } = await supabase
+        .from("plans")
+        .update({
+          last_payout_date: now.toISOString(),
+          next_payout_date: next_payout_date ? next_payout_date.toISOString() : null,
+        })
+        .eq("id", plan_id);
+
+      if (updateError) {
+        console.error(`Failed to update payout dates for fiat plan ${plan_id}:`, updateError);
+        return NextResponse.json({ error: "Failed to update plan dates for fiat payout" }, { status: 500, headers: corsHeaders });
+      }
+
+      return NextResponse.json({ success: true, message: "Fiat payout logged for manual processing." }, { headers: corsHeaders });
+    }
+
+    // Proceed with crypto payout
+    const recipientAddress = plan.payout_wallet_address;
     if (!recipientAddress) {
       console.error(`Plan ${plan_id} is missing a payout_wallet_address.`);
       return NextResponse.json(

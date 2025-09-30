@@ -54,6 +54,7 @@ export async function POST(request: NextRequest) {
       .from("plans")
       .select(
         `
+        payout_method,
         payout_wallet_address,
         wallets (id)
       `
@@ -75,8 +76,15 @@ export async function POST(request: NextRequest) {
     }
 
     const walletId = plan.wallets[0].id;
-    const recipientAddress = plan.payout_wallet_address;
 
+    // Handle manual fiat payouts for target plans
+    if (plan.payout_method === "fiat") {
+      console.log(`Acknowledging manual fiat payout for target plan_id: ${plan_id}.`);
+      return NextResponse.json({ success: true, message: "Fiat target payout acknowledged for manual processing." }, { headers: corsHeaders });
+    }
+
+    // Proceed with crypto payout
+    const recipientAddress = plan.payout_wallet_address;
     if (!recipientAddress) {
       return NextResponse.json(
         { error: "Payout wallet address not set" },

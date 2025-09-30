@@ -21,6 +21,7 @@ const payoutSchema = z.union([
     payout_account_number: z.string().min(1),
     bank_name: z.string().min(1),
     account_name: z.string().min(1),
+    bank_code: z.string().min(1),
   }),
   z.object({
     payout_method: z.literal("crypto"),
@@ -120,27 +121,40 @@ export async function POST(request: NextRequest) {
     if ("frequency" in validatedData && "payout_time" in validatedData) {
       const { frequency, payout_time } = validatedData;
       const now = new Date();
-      const [hours, minutes] = payout_time.split(":");
+      now.setSeconds(0, 0);
 
-      // Set the time for today
-      now.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
-
-      // Calculate the next date based on frequency
       switch (frequency.toLowerCase()) {
         case "daily":
-          // If the time is already past for today, schedule for tomorrow
+          const [hours, minutes] = payout_time.split(":").map(Number);
+          now.setHours(hours, minutes);
           if (now < new Date()) {
             now.setDate(now.getDate() + 1);
           }
           break;
         case "weekly":
-          now.setDate(now.getDate() + 7);
+          const weekdays = [
+            "sunday",
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+          ];
+          const targetDay = weekdays.indexOf(payout_time.toLowerCase());
+          const currentDay = now.getDay();
+          let dayDifference = targetDay - currentDay;
+          if (dayDifference < 0) {
+            dayDifference += 7;
+          }
+          now.setDate(now.getDate() + dayDifference);
           break;
         case "monthly":
-          now.setMonth(now.getMonth() + 1);
-          break;
-        default:
-          // Handle other frequencies or throw an error
+          const targetDate = parseInt(payout_time, 10);
+          now.setDate(targetDate);
+          if (now < new Date()) {
+            now.setMonth(now.getMonth() + 1);
+          }
           break;
       }
       next_payout_date = now.toISOString();
