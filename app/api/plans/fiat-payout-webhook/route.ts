@@ -91,7 +91,7 @@ export async function POST(request: NextRequest) {
       wallet_id,
       type: "debit",
       amount,
-      currency: "NGN",
+      currency: "USDC",
       description,
       fiat_transaction_id,
     });
