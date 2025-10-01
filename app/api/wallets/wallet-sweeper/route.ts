@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import supabase from "../../../../utils/supabase";
 import { logTransaction } from "../../../../lib/transaction_history";
+import { getTransactionStatus } from "../../../../lib/transaction_status";
 import {
   Connection,
   PublicKey,
@@ -197,7 +198,34 @@ export async function POST(request: NextRequest) {
 
     // Send the signed transaction to the network.
     const signature = await connection.sendRawTransaction(Buffer.from(finalSignedTxResponse.signature, 'base64'));
-    await connection.confirmTransaction(signature, "confirmed");
+
+    let status = await getTransactionStatus(signature);
+    console.log(`Sweep transaction ${signature} initial status: ${status}`);
+    let attempts = 0;
+    const maxAttempts = 3;
+    const delay = 20000; // 20 seconds
+
+    while (status !== "finalized" && attempts < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      status = await getTransactionStatus(signature);
+      console.log(
+        `Rechecked status for sweep transaction ${signature}: ${status}`
+      );
+      attempts++;
+    }
+
+    if (status !== "finalized") {
+      console.error(
+        `Sweep transaction ${signature} for wallet ${wallet_address} did not finalize. Status: ${status}`
+      );
+      return NextResponse.json(
+        {
+          error: "Transaction did not finalize",
+          details: `Transaction status: ${status}`,
+        },
+        { status: 500, headers: corsHeaders }
+      );
+    }
 
     console.log(
       `Successfully swept ${sweepAmount} USDC from ${wallet_address}. Signature: ${signature}`

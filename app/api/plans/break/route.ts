@@ -14,6 +14,7 @@ import {
   createTransferInstruction,
 } from "@solana/spl-token";
 import { logTransaction } from "../../../../lib/transaction_history";
+import { getTransactionStatus } from "../../../../lib/transaction_status";
 
 const SOLANA_RPC = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`;
 const USDC_MINT = new PublicKey(process.env.USDC_MINT!);
@@ -171,7 +172,34 @@ export async function POST(request: NextRequest) {
 
     // 9. Sign and send the transaction
     const signature = await connection.sendTransaction(tx, [payoutKeypair]);
-    await connection.confirmTransaction(signature, "confirmed");
+
+    let status = await getTransactionStatus(signature);
+    let attempts = 0;
+    const maxAttempts = 3;
+    const delay = 20000; // 20 seconds
+
+    while (status !== "finalized" && attempts < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      status = await getTransactionStatus(signature);
+      console.log(
+        `Rechecked status for break transaction ${signature}: ${status}`
+      );
+      attempts++;
+    }
+
+    if (status !== "finalized") {
+      console.error(
+        `Break transaction ${signature} for plan ${plan_id} did not finalize. Status: ${status}`
+      );
+      // Optionally, you might want to revert the balance reset here if possible
+      return NextResponse.json(
+        {
+          error: "Transaction did not finalize",
+          details: `Transaction status: ${status}`,
+        },
+        { status: 500, headers: corsHeaders }
+      );
+    }
 
     // Idempotency: claim this break's signature upfront. Requires unique constraint on processed_transactions.signature
     const { error: claimError } = await supabase

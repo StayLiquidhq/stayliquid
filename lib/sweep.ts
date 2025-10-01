@@ -1,4 +1,5 @@
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+import { getTransactionStatus } from "./transaction_status";
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
@@ -75,7 +76,25 @@ export async function sweepFunds(
   // Send the signed transaction to the network.
   const signature = await connection.sendRawTransaction(Buffer.from(finalSignedTxResponse.signature, 'base64'));
 
-  await connection.confirmTransaction(signature, "confirmed");
+  let status = await getTransactionStatus(signature);
+  let attempts = 0;
+  const maxAttempts = 3;
+  const delay = 20000; // 20 seconds
+
+  while (status !== "finalized" && attempts < maxAttempts) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    status = await getTransactionStatus(signature);
+    console.log(
+      `Rechecked status for sweep transaction ${signature}: ${status}`
+    );
+    attempts++;
+  }
+
+  if (status !== "finalized") {
+    throw new Error(
+      `Sweep transaction ${signature} for wallet ${userWalletAddress} did not finalize. Status: ${status}`
+    );
+  }
 
   console.log(
     `Successfully swept ${sweepAmount} USDC from ${userWalletAddress}. Signature: ${signature}`
