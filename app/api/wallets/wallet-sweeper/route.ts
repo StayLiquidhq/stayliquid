@@ -20,14 +20,25 @@ const sweepSchema = z.object({
   wallet_address: z.string(),
 });
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+const ALLOWED_ORIGINS = [
+  "https://savewithliquid.xyz",
+  "https://liquid-frontend-gray.vercel.app",
+];
+
+const getCorsHeaders = (origin: string | null) => {
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  };
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+  return headers;
 };
 
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+export async function OPTIONS(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  return new NextResponse(null, { status: 204, headers: getCorsHeaders(origin) });
 }
 
 const SOLANA_RPC = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`;
@@ -59,6 +70,16 @@ async function checkUsdcBalance(userWalletAddress: string) {
 }
 
 export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
+  if (!corsHeaders["Access-Control-Allow-Origin"]) {
+    return NextResponse.json(
+      { error: "Forbidden: Invalid origin" },
+      { status: 403 }
+    );
+  }
+
   try {
     // 1. Extract and validate the Bearer token from the header
     const authHeader = request.headers.get("authorization");

@@ -2,14 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
 import { z } from "zod";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
+// Strict CORS allowlist (aligned with other routes)
+const ALLOWED_ORIGINS = new Set<string>([
+  "https://liquid-frontend-gray.vercel.app",
+  "https://liquid-frontend-aq6izit64-pleaseamsorry3-gmailcoms-projects.vercel.app",
+  "https://savewithliquid.xyz",
+]);
 
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+function createCorsHeaders(origin: string | null): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    Vary: "Origin",
+  };
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+  return headers;
+}
+
+export async function OPTIONS(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const headers = createCorsHeaders(origin);
+  headers["Access-Control-Max-Age"] = "600";
+  return new NextResponse(null, { status: 204, headers });
 }
 
 // --- Zod Validation ---
@@ -34,23 +50,44 @@ const updatePlanSchema = z.object({
 
 // --- Endpoint ---
 export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = createCorsHeaders(origin);
   try {
+    // Enforce allowlist only when Origin header is present (browser requests)
+    if (origin && !ALLOWED_ORIGINS.has(origin)) {
+      return NextResponse.json(
+        { error: "Origin not allowed" },
+        { status: 403, headers: corsHeaders }
+      );
+    }
     // 1. Authenticate user
     const authHeader = request.headers.get("authorization");
     if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401, headers: corsHeaders }
+      );
     }
     const token = authHeader.split(" ")[1];
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token);
     if (authError || !user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401, headers: corsHeaders }
+      );
     }
 
     // 2. Validate body
     const body = await request.json();
     const validation = updatePlanSchema.safeParse(body);
     if (!validation.success) {
-      return NextResponse.json({ error: validation.error.format() }, { status: 400, headers: corsHeaders });
+      return NextResponse.json(
+        { error: validation.error.format() },
+        { status: 400, headers: corsHeaders }
+      );
     }
     const { plan_id, ...updateData } = validation.data;
 
@@ -98,16 +135,19 @@ export async function POST(request: NextRequest) {
     }
 
     // If payout_method is being updated, nullify the other method's fields
-    if (updateData.payout_method === 'fiat') {
-        (updateData as any).payout_wallet_address = null;
-    } else if (updateData.payout_method === 'crypto') {
-        (updateData as any).payout_account_number = null;
-        (updateData as any).bank_name = null;
-        (updateData as any).account_name = null;
-        (updateData as any).bank_code = null;
+    if (updateData.payout_method === "fiat") {
+      (updateData as any).payout_wallet_address = null;
+    } else if (updateData.payout_method === "crypto") {
+      (updateData as any).payout_account_number = null;
+      (updateData as any).bank_name = null;
+      (updateData as any).account_name = null;
+      (updateData as any).bank_code = null;
     }
 
-    console.log(`updating plan ${plan_id} for user ${user.id} with data:`, updateData);
+    console.log(
+      `updating plan ${plan_id} for user ${user.id} with data:`,
+      updateData
+    );
     // 3. Update plan
     const { data: updatedPlan, error: planError } = await supabase
       .from("plans")
@@ -118,13 +158,22 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (planError) {
-      return NextResponse.json({ error: "Failed to update plan or plan not found" }, { status: 500, headers: corsHeaders });
+      return NextResponse.json(
+        { error: "Failed to update plan or plan not found" },
+        { status: 500, headers: corsHeaders }
+      );
     }
 
     // 4. Return response
-    return NextResponse.json(updatedPlan, { status: 200, headers: corsHeaders });
+    return NextResponse.json(updatedPlan, {
+      status: 200,
+      headers: corsHeaders,
+    });
   } catch (err) {
     console.error("Unexpected error:", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500, headers: corsHeaders });
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500, headers: corsHeaders }
+    );
   }
 }

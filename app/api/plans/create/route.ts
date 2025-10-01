@@ -4,14 +4,30 @@ import { z } from "zod";
 import { createWallet } from "../../../../lib/CreateWallet";
 import { updateWebhookWithNewAddress } from "../../../../lib/update_webhook";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
+// Strict CORS allowlist (same as break route)
+const ALLOWED_ORIGINS = new Set<string>([
+  "https://liquid-frontend-gray.vercel.app",
+  "https://liquid-frontend-aq6izit64-pleaseamsorry3-gmailcoms-projects.vercel.app",
+  "https://savewithliquid.xyz",
+]);
 
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+function createCorsHeaders(origin: string | null): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    Vary: "Origin",
+  };
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+  return headers;
+}
+
+export async function OPTIONS(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const headers = createCorsHeaders(origin);
+  headers["Access-Control-Max-Age"] = "600";
+  return new NextResponse(null, { status: 204, headers });
 }
 
 // --- Zod Validation ---
@@ -62,7 +78,16 @@ const createPlanSchema = z.intersection(planSchema, payoutSchema).and(
 
 // --- Endpoint ---
 export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = createCorsHeaders(origin);
   try {
+    // Enforce allowlist only when Origin is present (browser requests)
+    if (origin && !ALLOWED_ORIGINS.has(origin)) {
+      return NextResponse.json(
+        { error: "Origin not allowed" },
+        { status: 403, headers: corsHeaders }
+      );
+    }
     // 1. Extract and validate the Bearer token from the header
     const authHeader = request.headers.get("authorization");
     if (!authHeader?.startsWith("Bearer ")) {

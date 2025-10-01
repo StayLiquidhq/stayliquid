@@ -1,18 +1,46 @@
 import { NextRequest, NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
+// Strict CORS allowlist (aligned with other routes)
+const ALLOWED_ORIGINS = new Set<string>([
+  "https://liquid-frontend-gray.vercel.app",
+  "https://liquid-frontend-aq6izit64-pleaseamsorry3-gmailcoms-projects.vercel.app",
+  "https://savewithliquid.xyz",
+]);
 
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+function createCorsHeaders(origin: string | null): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    Vary: "Origin",
+  };
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+  return headers;
+}
+
+export async function OPTIONS(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const headers = createCorsHeaders(origin);
+  headers["Access-Control-Max-Age"] = "600";
+  return new NextResponse(null, { status: 204, headers });
 }
 
 export async function GET(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = createCorsHeaders(origin);
   try {
+    // Enforce allowlist only when Origin header is present (browser requests)
+    if (origin && !ALLOWED_ORIGINS.has(origin)) {
+      return NextResponse.json(
+        {
+          error: "Origin not allowed",
+          hasPlan: null,
+        },
+        { status: 403, headers: corsHeaders }
+      );
+    }
     // 1. Extract token
     const authHeader = request.headers.get("authorization");
     if (!authHeader?.startsWith("Bearer ")) {

@@ -15,22 +15,57 @@ import {
 } from "@solana/spl-token";
 import { logTransaction } from "../../../../lib/transaction_history";
 import { getTransactionStatus } from "../../../../lib/transaction_status";
+import { z } from "zod";
 
 const SOLANA_RPC = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`;
 const USDC_MINT = new PublicKey(process.env.USDC_MINT!);
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
+// Strict CORS allowlist
+const ALLOWED_ORIGINS = new Set<string>([
+  "https://liquid-frontend-gray.vercel.app",
+  "https://liquid-frontend-aq6izit64-pleaseamsorry3-gmailcoms-projects.vercel.app",
+  "https://savewithliquid.xyz",
+]);
 
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+function createCorsHeaders(origin: string | null): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    Vary: "Origin",
+  };
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+  return headers;
+}
+
+// Request body validation
+const BreakRequestSchema = z.object({
+  plan_id: z.union([
+    z.string().min(1, "plan_id is required"),
+    z.number().int().positive(),
+  ]),
+});
+
+export async function OPTIONS(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const headers = createCorsHeaders(origin);
+  headers["Access-Control-Max-Age"] = "600";
+  return new NextResponse(null, { status: 204, headers });
 }
 
 export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = createCorsHeaders(origin);
   try {
+    // Enforce allowlist only when Origin header is present (browser requests)
+    if (origin && !ALLOWED_ORIGINS.has(origin)) {
+      return NextResponse.json(
+        { error: "Origin not allowed" },
+        { status: 403, headers: corsHeaders }
+      );
+    }
+
     // 1. Authenticate the user
     const authHeader = request.headers.get("authorization");
     if (!authHeader?.startsWith("Bearer ")) {
@@ -51,14 +86,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 2. Get plan_id from the request body
-    const { plan_id } = await request.json();
-    if (!plan_id) {
+    // 2. Validate request body
+    const json = await request.json().catch(() => null);
+    const parsed = BreakRequestSchema.safeParse(json);
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: "Missing plan_id" },
+        { error: "Invalid request body", details: parsed.error.flatten() },
         { status: 400, headers: corsHeaders }
       );
     }
+    const { plan_id } = parsed.data;
 
     // 3. Fetch plan details to get the payout address and wallet ID
     const { data: plan, error: planError } = await supabase
@@ -242,7 +279,7 @@ export async function POST(request: NextRequest) {
       await logTransaction({
         wallet_id: walletId,
         type: "debit",
-        amount: feeAmount,
+        amount: parseFloat(feeAmount.toFixed(3)),
         currency: "USDC",
         description: "Plan breakage fee",
         solana_signature: signature,
