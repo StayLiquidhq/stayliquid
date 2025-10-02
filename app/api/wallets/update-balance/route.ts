@@ -158,7 +158,7 @@ async function processIncomingTransfer(
 
     if (fetchError || !wallet) {
       console.log(`Wallet not in DB, skipping sweep for: ${toAddress}`);
-      return true; // Not an error, just no action needed.
+      return false; // Not an error, just no action needed.
     }
 
     // 2. Sweep the incoming amount to the dev wallet
