@@ -250,84 +250,98 @@ export async function POST(request: NextRequest) {
     }
 
     if (signature && sweepAmount > 0) {
-      const { error: claimError } = await supabase
+      // Idempotency guard: check if transaction has already been processed
+      const { data: existingTx, error: fetchError } = await supabase
         .from("processed_transactions")
-        .insert({ signature });
-      if (claimError) {
-        if ((claimError as any).code === "23505") {
-          console.log(
-            `Sweep transaction ${signature} already claimed. Skipping.`
-          );
-          return NextResponse.json(
-            { signature, sweepAmount, message: "Sweep already processed" },
-            { headers: corsHeaders }
-          );
-        }
+        .select("signature")
+        .eq("signature", signature)
+        .single();
+
+      if (fetchError && fetchError.code !== "PGRST116") {
         console.error(
-          `Failed to claim sweep transaction ${signature}:`,
-          claimError
+          `Error checking for processed transaction ${signature}:`,
+          fetchError
         );
         return NextResponse.json(
-          {
-            error: "Internal server error",
-            details: "Failed to claim sweep transaction",
-          },
+          { error: "Internal server error" },
           { status: 500, headers: corsHeaders }
         );
       }
 
-      const { data: wallet, error: fetchError } = await supabase
+      if (existingTx) {
+        console.log(
+          `Sweep transaction ${signature} already processed. Skipping.`
+        );
+        return NextResponse.json(
+          { signature, sweepAmount, message: "Sweep already processed" },
+          { headers: corsHeaders }
+        );
+      }
+
+      const { data: wallet, error: walletFetchError } = await supabase
         .from("wallets")
         .select("id")
         .eq("address", wallet_address)
         .single();
 
-      if (fetchError || !wallet) {
+      if (walletFetchError || !wallet) {
         console.error(
           `Wallet not found for address ${wallet_address}, cannot update balance.`
         );
-        await supabase
-          .from("processed_transactions")
-          .delete()
-          .eq("signature", signature);
-      } else {
-        const { error: rpcError } = await supabase.rpc("increment_balance", {
-          wallet_address: wallet_address,
-          amount_to_add: sweepAmount,
-        });
+        // Do not mark as processed, as the credit failed.
+        return NextResponse.json(
+          { error: "Wallet not found, balance update failed" },
+          { status: 404, headers: corsHeaders }
+        );
+      }
 
-        if (rpcError) {
-          console.error(
-            `Failed to update balance for wallet ${wallet_address}:`,
-            rpcError
-          );
-          await supabase
-            .from("processed_transactions")
-            .delete()
-            .eq("signature", signature);
-          return NextResponse.json(
-            { error: "Failed to update balance" },
-            { status: 500, headers: corsHeaders }
-          );
-        } else {
-          console.log(
-            `Successfully swept and updated balance for wallet ${wallet_address}`
-          );
-          try {
-            await logTransaction({
-              wallet_id: wallet.id,
-              type: "credit",
-              amount: sweepAmount,
-              currency: "USDC",
-              description: `Wallet balance updated`,
-            });
-          } catch (e) {
-            console.error(
-              `Failed to log transaction for ${wallet_address}:`,
-              e
-            );
-          }
-        }
+      const { error: rpcError } = await supabase.rpc("increment_balance", {
+        wallet_address: wallet_address,
+        amount_to_add: sweepAmount,
+      });
+
+      if (rpcError) {
+        console.error(
+          `Failed to update balance for wallet ${wallet_address}:`,
+          rpcError
+        );
+        // Do not mark as processed, as the credit failed.
+        return NextResponse.json(
+          { error: "Failed to update balance" },
+          { status: 500, headers: corsHeaders }
+        );
+      }
+
+      // All operations successful, now mark as processed.
+      const { error: insertError } = await supabase
+        .from("processed_transactions")
+        .insert({ signature });
+
+      if (insertError) {
+        console.error(
+          `CRITICAL: Failed to mark transaction ${signature} as processed after crediting balance.`,
+          insertError
+        );
+        // This is a critical state that requires manual intervention.
+        // The user has been credited, but the transaction is not marked as processed.
+      }
+
+      console.log(
+        `Successfully swept and updated balance for wallet ${wallet_address}`
+      );
+      try {
+        await logTransaction({
+          wallet_id: wallet.id,
+          type: "credit",
+          amount: sweepAmount,
+          currency: "USDC",
+          description: `Wallet balance updated`,
+        });
+      } catch (e) {
+        console.error(
+          `Failed to log transaction for ${wallet_address}:`,
+          e
+        );
       }
     }
 
