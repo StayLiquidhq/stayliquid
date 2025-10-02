@@ -98,67 +98,70 @@ async function processIncomingTransfer(
   if (!toAddress) return;
 
   try {
-    let status = await getTransactionStatus(signature);
-    console.log(`Initial status for ${signature}: ${status}`);
-    let attempts = 0;
-    const maxAttempts = 2;
-    const delay = 20000; // 20 seconds
+  let status = await getTransactionStatus(signature);
+  console.log(`Initial status for ${signature}: ${status}`);
+  let attempts = 0;
+  const maxAttempts = 2;
+  const delay = 3000; // 3 seconds
 
-    while (status !== "finalized" && attempts < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      status = await getTransactionStatus(signature);
-      console.log(`Rechecked status for ${signature}: ${status}`);
-      attempts++;
-    }
+  while (status !== "finalized" && attempts < maxAttempts) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    status = await getTransactionStatus(signature);
+    console.log(`Rechecked status for ${signature}: ${status}`);
+    attempts++;
+  }
 
-    if (status !== "finalized") {
-      console.error(
-        `Transaction ${signature} for ${toAddress} did not succeed. Status: ${status}`
-      );
-      return;
-    }
-
-    // 1. Find the wallet in our database to get its ID, and current balance
-    const { data: wallet, error: fetchError } = await supabase
-      .from("wallets")
-      .select("id, balance")
-      .eq("address", toAddress)
-      .single();
-
-    if (fetchError || !wallet) {
-      console.log(`Wallet not in DB, skipping sweep for: ${toAddress}`);
-      return;
-    }
-
-    // 2. Sweep the incoming amount to the dev wallet
-    const { sweepAmount } = await sweepFunds(
-      toAddress,
-      amount
+  if (status !== "finalized") {
+    console.error(
+      `Transaction ${signature} for ${toAddress} did not succeed. Status: ${status}`
     );
+    return;
+  }
 
-    // 3. After a successful sweep, update the user's wallet balance in our DB atomically
-    const { error: rpcError } = await supabase.rpc("increment_balance", {
-      wallet_address: toAddress,
-      amount_to_add: sweepAmount,
+  // 1. Find the wallet in our database to get its ID, and current balance
+  const { data: wallet, error: fetchError } = await supabase
+    .from("wallets")
+    .select("id, balance")
+    .eq("address", toAddress)
+    .single();
+
+  if (fetchError || !wallet) {
+    console.log(`Wallet not in DB, skipping sweep for: ${toAddress}`);
+    return;
+  }
+
+  // 2. Sweep the incoming amount to the dev wallet
+  const { sweepAmount } = await sweepFunds(
+    toAddress,
+    amount
+  );
+
+  // 3. After a successful sweep, update the user's wallet balance in our DB atomically
+  const { error: rpcError } = await supabase.rpc("increment_balance", {
+    wallet_address: toAddress,
+    amount_to_add: sweepAmount,
+  });
+
+  if (rpcError) {
+    console.error(
+      `Failed to update balance for wallet ${toAddress}:`,
+      rpcError
+    );
+    throw new Error(
+      `Failed to update balance for wallet ${toAddress}: ${rpcError.message}`
+    );
+  } else {
+    console.log(
+      `Successfully swept and updated balance for wallet ${toAddress}`
+    );
+    // Log the credit transaction after balance is successfully updated
+    await logTransaction({
+      wallet_id: wallet.id,
+      type: "credit",
+      amount: sweepAmount,
+      currency: "USDC",
+      description: `Received from ${fromAddress}`,
     });
-
-    if (rpcError) {
-      console.error(
-        `Failed to update balance for wallet ${toAddress}:`,
-        rpcError
-      );
-    } else {
-      console.log(
-        `Successfully swept and updated balance for wallet ${toAddress}`
-      );
-      // Log the credit transaction after balance is successfully updated
-      await logTransaction({
-        wallet_id: wallet.id,
-        type: "credit",
-        amount: sweepAmount,
-        currency: "USDC",
-        description: `Received from ${fromAddress}`,
-      });
     }
   } catch (error) {
     console.error(`Error processing transfer for ${toAddress}:`, error);
