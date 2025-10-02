@@ -54,27 +54,58 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        // Idempotency guard: attempt to claim ONLY transactions we will process
-        // Requires a unique constraint on processed_transactions.signature to be fully effective
-        const { error: claimError } = await supabase
+        // Idempotency guard: check if transaction has already been processed
+        const { data: existingTx, error: fetchError } = await supabase
           .from("processed_transactions")
-          .insert({ signature });
-        if (claimError) {
-          // If unique violation (23505), another worker already claimed/processed it
-          if ((claimError as any).code === "23505") {
-            console.log(`Transaction ${signature} already claimed. Skipping.`);
-            continue;
-          }
+          .select("signature")
+          .eq("signature", signature)
+          .single();
+
+        if (fetchError && fetchError.code !== "PGRST116") {
+          // PGRST116: row not found, which is what we want.
           console.error(
-            `Failed to claim transaction ${signature} for processing:`,
-            claimError
+            `Error checking for processed transaction ${signature}:`,
+            fetchError
+          );
+          continue;
+        }
+
+        if (existingTx) {
+          console.log(
+            `Transaction ${signature} already processed. Skipping.`
           );
           continue;
         }
 
         // Process each destination once with the aggregated amount
+        let allSuccessful = true;
         for (const [toUserAccount, { amount, from }] of aggregation.entries()) {
-          await processIncomingTransfer(from, toUserAccount, amount, signature);
+          const success = await processIncomingTransfer(
+            from,
+            toUserAccount,
+            amount,
+            signature
+          );
+          if (!success) {
+            allSuccessful = false;
+            console.error(
+              `Failed to process transfer for ${toUserAccount} in transaction ${signature}. Aborting processing for this transaction.`
+            );
+            break; // Stop processing other transfers in this transaction
+          }
+        }
+
+        // If all transfers were processed successfully, mark the transaction as processed
+        if (allSuccessful) {
+          const { error: insertError } = await supabase
+            .from("processed_transactions")
+            .insert({ signature });
+          if (insertError) {
+            console.error(
+              `Failed to mark transaction ${signature} as processed:`,
+              insertError
+            );
+          }
         }
       }
     }
@@ -94,76 +125,73 @@ async function processIncomingTransfer(
   toAddress: string,
   amount: number,
   signature: string
-) {
-  if (!toAddress) return;
+): Promise<boolean> {
+  if (!toAddress) return false;
 
   try {
-  let status = await getTransactionStatus(signature);
-  console.log(`Initial status for ${signature}: ${status}`);
-  let attempts = 0;
-  const maxAttempts = 4;
-  const delay = 10000; // 10 seconds
+    let status = await getTransactionStatus(signature);
+    console.log(`Initial status for ${signature}: ${status}`);
+    let attempts = 0;
+    const maxAttempts = 4;
+    const delay = 10000; // 10 seconds
 
-  while (status !== "finalized" && attempts < maxAttempts) {
-    await new Promise((resolve) => setTimeout(resolve, delay));
-    status = await getTransactionStatus(signature);
-    console.log(`Rechecked status for ${signature}: ${status}`);
-    attempts++;
-  }
+    while (status !== "finalized" && attempts < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      status = await getTransactionStatus(signature);
+      console.log(`Rechecked status for ${signature}: ${status}`);
+      attempts++;
+    }
 
-  if (status !== "finalized") {
-    console.error(
-      `Transaction ${signature} for ${toAddress} did not succeed. Status: ${status}`
-    );
-    return;
-  }
+    if (status !== "finalized") {
+      console.error(
+        `Transaction ${signature} for ${toAddress} did not succeed. Status: ${status}`
+      );
+      return false;
+    }
 
-  // 1. Find the wallet in our database to get its ID, and current balance
-  const { data: wallet, error: fetchError } = await supabase
-    .from("wallets")
-    .select("id, balance")
-    .eq("address", toAddress)
-    .single();
+    // 1. Find the wallet in our database to get its ID, and current balance
+    const { data: wallet, error: fetchError } = await supabase
+      .from("wallets")
+      .select("id, balance")
+      .eq("address", toAddress)
+      .single();
 
-  if (fetchError || !wallet) {
-    console.log(`Wallet not in DB, skipping sweep for: ${toAddress}`);
-    return;
-  }
+    if (fetchError || !wallet) {
+      console.log(`Wallet not in DB, skipping sweep for: ${toAddress}`);
+      return true; // Not an error, just no action needed.
+    }
 
-  // 2. Sweep the incoming amount to the dev wallet
-  const { sweepAmount } = await sweepFunds(
-    toAddress,
-    amount
-  );
+    // 2. Sweep the incoming amount to the dev wallet
+    const { sweepAmount } = await sweepFunds(toAddress, amount);
 
-  // 3. After a successful sweep, update the user's wallet balance in our DB atomically
-  const { error: rpcError } = await supabase.rpc("increment_balance", {
-    wallet_address: toAddress,
-    amount_to_add: sweepAmount,
-  });
-
-  if (rpcError) {
-    console.error(
-      `Failed to update balance for wallet ${toAddress}:`,
-      rpcError
-    );
-    throw new Error(
-      `Failed to update balance for wallet ${toAddress}: ${rpcError.message}`
-    );
-  } else {
-    console.log(
-      `Successfully swept and updated balance for wallet ${toAddress}`
-    );
-    // Log the credit transaction after balance is successfully updated
-    await logTransaction({
-      wallet_id: wallet.id,
-      type: "credit",
-      amount: sweepAmount,
-      currency: "USDC",
-      description: `Received from ${fromAddress}`,
+    // 3. After a successful sweep, update the user's wallet balance in our DB atomically
+    const { error: rpcError } = await supabase.rpc("increment_balance", {
+      wallet_address: toAddress,
+      amount_to_add: sweepAmount,
     });
+
+    if (rpcError) {
+      console.error(
+        `Failed to update balance for wallet ${toAddress}:`,
+        rpcError
+      );
+      return false;
+    } else {
+      console.log(
+        `Successfully swept and updated balance for wallet ${toAddress}`
+      );
+      // Log the credit transaction after balance is successfully updated
+      await logTransaction({
+        wallet_id: wallet.id,
+        type: "credit",
+        amount: sweepAmount,
+        currency: "USDC",
+        description: `Received from ${fromAddress}`,
+      });
+      return true;
     }
   } catch (error) {
     console.error(`Error processing transfer for ${toAddress}:`, error);
+    return false;
   }
 }
