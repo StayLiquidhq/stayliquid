@@ -224,8 +224,8 @@ export async function POST(request: NextRequest) {
     let status = await getTransactionStatus(signature);
     console.log(`Sweep transaction ${signature} initial status: ${status}`);
     let attempts = 0;
-    const maxAttempts = 3;
-    const delay = 20000; // 20 seconds
+    const maxAttempts = 5;
+    const delay = 10000; // 5 seconds
 
     while (status !== "finalized" && attempts < maxAttempts) {
       await new Promise((resolve) => setTimeout(resolve, delay));
@@ -248,10 +248,6 @@ export async function POST(request: NextRequest) {
         { status: 500, headers: corsHeaders }
       );
     }
-
-    console.log(
-      `Successfully swept ${sweepAmount} USDC from ${wallet_address}. Signature: ${signature}`
-    );
 
     if (signature && sweepAmount > 0) {
       const { error: claimError } = await supabase

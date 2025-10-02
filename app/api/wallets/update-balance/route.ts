@@ -101,8 +101,8 @@ async function processIncomingTransfer(
   let status = await getTransactionStatus(signature);
   console.log(`Initial status for ${signature}: ${status}`);
   let attempts = 0;
-  const maxAttempts = 2;
-  const delay = 3000; // 3 seconds
+  const maxAttempts = 4;
+  const delay = 10000; // 10 seconds
 
   while (status !== "finalized" && attempts < maxAttempts) {
     await new Promise((resolve) => setTimeout(resolve, delay));
