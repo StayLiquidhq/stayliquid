@@ -23,6 +23,7 @@ const sweepSchema = z.object({
 const ALLOWED_ORIGINS = [
   "https://savewithliquid.xyz",
   "https://liquid-frontend-gray.vercel.app",
+  "https://savewithliquid.com",
 ];
 
 const getCorsHeaders = (origin: string | null) => {
