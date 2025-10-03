@@ -310,6 +310,7 @@ export async function POST(request: NextRequest) {
               amount: sweepAmount,
               currency: "USDC",
               description: `Wallet balance updated`,
+              solana_signature: signature,
             });
           } catch (e) {
             console.error(
