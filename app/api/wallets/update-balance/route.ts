@@ -163,6 +163,7 @@ async function processIncomingTransfer(
       amount: sweepAmount,
       currency: "USDC",
       description: `Received from ${fromAddress}`,
+      solana_signature: signature,
     });
     }
   } catch (error) {
