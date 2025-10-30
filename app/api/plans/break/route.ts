@@ -22,6 +22,7 @@ const USDC_MINT = new PublicKey(process.env.USDC_MINT!);
 
 // Strict CORS allowlist
 const ALLOWED_ORIGINS = new Set<string>([
+  "http://localhost:3000",
   "https://liquid-frontend-gray.vercel.app",
   "https://liquid-frontend-aq6izit64-pleaseamsorry3-gmailcoms-projects.vercel.app",
   "https://savewithliquid.xyz",

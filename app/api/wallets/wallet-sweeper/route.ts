@@ -23,6 +23,7 @@ const ALLOWED_ORIGINS = [
   "https://savewithliquid.xyz",
   "https://liquid-frontend-gray.vercel.app",
   "https://savewithliquid.com",
+  "http://localhost:3000",
 ];
 
 const getCorsHeaders = (origin: string | null) => {
@@ -38,7 +39,10 @@ const getCorsHeaders = (origin: string | null) => {
 
 export async function OPTIONS(request: NextRequest) {
   const origin = request.headers.get("origin");
-  return new NextResponse(null, { status: 204, headers: getCorsHeaders(origin) });
+  return new NextResponse(null, {
+    status: 204,
+    headers: getCorsHeaders(origin),
+  });
 }
 
 const SOLANA_RPC = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`;
@@ -63,7 +67,9 @@ async function checkUsdcBalance(userWalletAddress: string) {
       return 0;
     }
 
-    console.log(`User ${userWalletAddress} has USDC balance: ${tokenBalance.value.uiAmount}`);
+    console.log(
+      `User ${userWalletAddress} has USDC balance: ${tokenBalance.value.uiAmount}`
+    );
     return tokenBalance.value.uiAmount;
   } catch (error) {
     return 0;
@@ -118,29 +124,29 @@ export async function POST(request: NextRequest) {
 
     // 3. Verify user owns the wallet
     const { data: walletData, error: walletError } = await supabase
-        .from("wallets")
-        .select("plan_id")
-        .eq("address", wallet_address)
-        .single();
+      .from("wallets")
+      .select("plan_id")
+      .eq("address", wallet_address)
+      .single();
 
     if (walletError || !walletData) {
-        return NextResponse.json(
-            { error: "Wallet not found" },
-            { status: 404, headers: corsHeaders }
-        );
+      return NextResponse.json(
+        { error: "Wallet not found" },
+        { status: 404, headers: corsHeaders }
+      );
     }
 
     const { data: planData, error: planError } = await supabase
-        .from("plans")
-        .select("user_id")
-        .eq("id", walletData.plan_id)
-        .single();
+      .from("plans")
+      .select("user_id")
+      .eq("id", walletData.plan_id)
+      .single();
 
     if (planError || !planData || planData.user_id !== user.id) {
-        return NextResponse.json(
-            { error: "Forbidden: User does not own this wallet" },
-            { status: 403, headers: corsHeaders }
-        );
+      return NextResponse.json(
+        { error: "Forbidden: User does not own this wallet" },
+        { status: 403, headers: corsHeaders }
+      );
     }
 
     const balance = await checkUsdcBalance(wallet_address);
@@ -161,7 +167,10 @@ export async function POST(request: NextRequest) {
     const feePayer = new PublicKey(FEES_PAYER_WALLET);
 
     console.log("Fetching token accounts...");
-    const senderTokenAccount = await getAssociatedTokenAddress(USDC_MINT, sender);
+    const senderTokenAccount = await getAssociatedTokenAddress(
+      USDC_MINT,
+      sender
+    );
     const recipientTokenAccount = await getAssociatedTokenAddress(
       USDC_MINT,
       recipient
@@ -169,7 +178,9 @@ export async function POST(request: NextRequest) {
 
     const instructions = [];
     console.log("Checking recipient token account info...");
-    const recipientInfo = await connection.getAccountInfo(recipientTokenAccount);
+    const recipientInfo = await connection.getAccountInfo(
+      recipientTokenAccount
+    );
     if (!recipientInfo) {
       console.log("Recipient token account not found. Creating one...");
       instructions.push(
@@ -206,37 +217,41 @@ export async function POST(request: NextRequest) {
 
     // Sign with the funding account.
     const signedTxResponse = await cdp.solana.signTransaction({
-        address: wallet_address,
-        transaction: serializedTx,
+      address: wallet_address,
+      transaction: serializedTx,
     });
 
     const signedBase64Tx = signedTxResponse.signature;
 
     // Sign with the feePayer account.
     const finalSignedTxResponse = await cdp.solana.signTransaction({
-        address: feePayer.toBase58(),
-        transaction: signedBase64Tx,
+      address: feePayer.toBase58(),
+      transaction: signedBase64Tx,
     });
 
     // Send the signed transaction to the network.
-    const signature = await connection.sendRawTransaction(Buffer.from(finalSignedTxResponse.signature, 'base64'));
+    const signature = await connection.sendRawTransaction(
+      Buffer.from(finalSignedTxResponse.signature, "base64")
+    );
 
     const latestBlockHash = await connection.getLatestBlockhash();
     const confirmation = await connection.confirmTransaction({
-        blockhash: latestBlockHash.blockhash,
-        lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
-        signature: signature,
+      blockhash: latestBlockHash.blockhash,
+      lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
+      signature: signature,
     });
 
     if (confirmation.value.err) {
-        console.error(`Sweep transaction ${signature} for wallet ${wallet_address} failed to confirm.`);
-        return NextResponse.json(
-            {
-                error: "Transaction failed to confirm",
-                details: confirmation.value.err,
-            },
-            { status: 500, headers: corsHeaders }
-        );
+      console.error(
+        `Sweep transaction ${signature} for wallet ${wallet_address} failed to confirm.`
+      );
+      return NextResponse.json(
+        {
+          error: "Transaction failed to confirm",
+          details: confirmation.value.err,
+        },
+        { status: 500, headers: corsHeaders }
+      );
     }
 
     if (signature && sweepAmount > 0) {

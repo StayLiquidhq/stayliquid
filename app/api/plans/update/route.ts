@@ -8,6 +8,7 @@ const ALLOWED_ORIGINS = new Set<string>([
   "https://liquid-frontend-aq6izit64-pleaseamsorry3-gmailcoms-projects.vercel.app",
   "https://savewithliquid.xyz",
   "https://savewithliquid.com",
+  "http://localhost:3000",
 ]);
 
 function createCorsHeaders(origin: string | null): Record<string, string> {
