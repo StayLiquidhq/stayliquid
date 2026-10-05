@@ -1,172 +1,179 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Connection } from "@solana/web3.js";
-import supabase from "../../../../utils/supabase";
-import { sweepFunds } from "../../../../lib/sweep";
-import { logTransaction } from "../../../../lib/transaction_history";
+import supabase from "@/utils/supabase";
+import { logTransaction } from "@/lib/transaction_history";
+import { getOnChainTokenBalance } from "@/lib/cdp_balance";
+import { isSupportedChain, isSupportedToken, SupportedChain, SupportedToken } from "@/lib/tokens";
+import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
+import { logger } from "@/lib/logger";
+import { requireEnv } from "@/lib/env";
 
-interface TokenTransfer {
-  fromUserAccount: string;
-  mint: string;
-  toUserAccount: string;
-  tokenAmount: number;
+import { z } from "zod";
+
+const cdpPayloadSchema = z.object({
+  event_type: z.string().optional(),
+  transaction_hash: z.string().optional(),
+  transaction_signature: z.string().optional(),
+  address: z.string().optional(),
+  network: z.string().optional(),
+  amount: z.union([z.number(), z.string()]).optional(),
+  token: z.string().optional(),
+  symbol: z.string().optional(),
+});
+
+const cdpWebhookListSchema = z.union([
+  z.array(cdpPayloadSchema),
+  cdpPayloadSchema.transform((item) => [item]),
+]);
+
+export async function OPTIONS(request: NextRequest) {
+  return handleCorsPreflight(request);
 }
 
-// Using Devnet USDC mint for this example. Change to mainnet if needed.
-const USDC_MINT = process.env.USDC_MINT; // Mainnet USDC mint
-
 export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
   try {
-    const payload = await request.json();
-    console.log("Received webhook payload:", JSON.stringify(payload, null, 2));
+    const webhookSecret = requireEnv("CDP_WEBHOOK_SECRET");
 
-    if (Array.isArray(payload)) {
-      for (const transaction of payload) {
-        if (transaction.transactionError !== null) continue;
+    const authHeader = request.headers.get("authorization") || request.headers.get("x-webhook-secret");
 
-        const signature: string | undefined = transaction.signature;
-        if (!signature) continue;
+    if (authHeader !== `Bearer ${webhookSecret}` && authHeader !== webhookSecret) {
+      logger.warn("Unauthorized webhook request attempt", { module: "webhook/deposit" });
 
-        // Aggregate USDC transfers by destination address within this transaction
-        const aggregation = new Map<string, { amount: number; from: string }>();
-        if (Array.isArray(transaction.tokenTransfers)) {
-          for (const t of transaction.tokenTransfers as TokenTransfer[]) {
-            if (t.mint !== USDC_MINT) continue;
-            if (!t.toUserAccount) continue;
-            if (typeof t.tokenAmount !== "number" || t.tokenAmount <= 0)
-              continue;
-            const current = aggregation.get(t.toUserAccount);
-            if (current) {
-              current.amount += t.tokenAmount;
-            } else {
-              aggregation.set(t.toUserAccount, {
-                amount: t.tokenAmount,
-                from: t.fromUserAccount,
-              });
-            }
-          }
-        }
+      return NextResponse.json(
+        { error: "Unauthorized webhook request" },
+        { status: 401, headers: corsHeaders }
+      );
+    }
 
-        // If no relevant USDC transfers found, skip without claiming idempotency
-        if (aggregation.size === 0) {
-          console.log(
-            `No relevant USDC transfers found in tx ${signature}. Skipping without claiming.`
-          );
+    const body = await request.json().catch(() => null);
+
+    if (!body) {
+      return NextResponse.json(
+        { message: "Empty payload received" },
+        { status: 200, headers: corsHeaders }
+      );
+    }
+
+    const parseResult = cdpWebhookListSchema.safeParse(body);
+
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { message: "Invalid payload format" },
+        { status: 200, headers: corsHeaders }
+      );
+    }
+
+    const items = parseResult.data;
+
+    for (const item of items) {
+      const txId = item.transaction_hash || item.transaction_signature;
+      const walletAddress = item.address;
+
+      if (!txId || !walletAddress) {
+        continue;
+      }
+
+      const { error: claimError } = await supabase
+        .from("processed_transactions")
+        .insert({ signature: txId });
+
+      if (claimError) {
+        if (claimError.code === "23505") {
+          logger.debug("Transaction already processed. Skipping duplicate.", {
+            module: "webhook/deposit",
+            txId,
+          });
           continue;
         }
 
-        // Idempotency guard: attempt to claim ONLY transactions we will process
-        // Requires a unique constraint on processed_transactions.signature to be fully effective
-        const { error: claimError } = await supabase
-          .from("processed_transactions")
-          .insert({ signature });
-        if (claimError) {
-          // If unique violation (23505), another worker already claimed/processed it
-          if ((claimError as any).code === "23505") {
-            console.log(`Transaction ${signature} already claimed. Skipping.`);
-            continue;
-          }
-          console.error(
-            `Failed to claim transaction ${signature} for processing:`,
-            claimError
-          );
-          continue;
-        }
+        logger.error("Failed to claim transaction signature in DB", {
+          module: "webhook/deposit",
+          txId,
+        }, claimError);
+        continue;
+      }
 
-        // Process each destination once with the aggregated amount
-        for (const [toUserAccount, { amount, from }] of aggregation.entries()) {
-          await processIncomingTransfer(from, toUserAccount, amount, signature);
+      const { data: wallet, error: walletError } = await supabase
+        .from("wallets")
+        .select("id, plan_id, chain_type")
+        .eq("address", walletAddress)
+        .single();
+
+      if (walletError || !wallet) {
+        logger.info("Address is not a registered Liquid wallet. Releasing claim.", {
+          module: "webhook/deposit",
+          address: walletAddress,
+          txId,
+        });
+        await supabase.from("processed_transactions").delete().eq("signature", txId);
+        continue;
+      }
+
+      const chain: SupportedChain = isSupportedChain(wallet.chain_type) ? wallet.chain_type : "solana";
+      const rawToken = item.symbol || item.token || "USDC";
+      const token: SupportedToken = isSupportedToken(rawToken) ? rawToken : "USDC";
+      const depositAmount = item.amount ? Number(item.amount) : 0;
+
+      await logTransaction({
+        wallet_id: wallet.id,
+        type: "credit",
+        amount: depositAmount,
+        currency: token,
+        description: `Deposit confirmed on ${chain} (${token})`,
+        solana_signature: chain === "solana" ? txId : undefined,
+        transaction_hash: chain === "base" ? txId : undefined,
+      });
+
+      logger.info("Deposit successfully confirmed and logged. Funds safely held on-chain.", {
+        module: "webhook/deposit",
+        walletAddress,
+        chain,
+        token,
+        txId,
+      });
+
+      const { data: plan } = await supabase
+        .from("plans")
+        .select("id, target_type, target_amount, status")
+        .eq("id", wallet.plan_id)
+        .single();
+
+      if (
+        plan &&
+        plan.status === "active" &&
+        plan.target_type === "amount" &&
+        plan.target_amount
+      ) {
+        const liveBalance = await getOnChainTokenBalance({
+          address: walletAddress,
+          chain,
+          token,
+        });
+
+        if (liveBalance >= plan.target_amount) {
+          logger.info("Target plan goal achieved on-chain! Ready for payout.", {
+            module: "webhook/deposit",
+            planId: plan.id,
+            targetAmount: plan.target_amount,
+            liveBalance,
+          });
         }
       }
     }
 
-    return NextResponse.json({ success: true, message: "Webhook processed" });
+    return NextResponse.json(
+      { success: true, message: "CDP webhook processed successfully" },
+      { headers: corsHeaders }
+    );
   } catch (err) {
-    console.error("Error processing webhook:", err);
+    const errorObj = err instanceof Error ? err : new Error(String(err));
+    logger.error("Error processing deposit webhook", { module: "webhook/deposit" }, errorObj);
+
     return NextResponse.json(
       { error: "Internal server error" },
-      { status: 500 }
+      { status: 500, headers: corsHeaders }
     );
-  }
-}
-
-async function processIncomingTransfer(
-  fromAddress: string,
-  toAddress: string,
-  amount: number,
-  signature: string
-) {
-  if (!toAddress) return;
-
-  try {
-    const connection = new Connection(
-      `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`,
-      "confirmed"
-    );
-
-    const { value: status } = await connection.getSignatureStatus(signature);
-
-    if (status && status.confirmationStatus === "finalized") {
-      console.log(`Transaction ${signature} already finalized.`);
-    } else {
-      const latestBlockHash = await connection.getLatestBlockhash();
-      await connection.confirmTransaction({
-        blockhash: latestBlockHash.blockhash,
-        lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
-        signature: signature,
-      });
-    }
-
-    // 1. Find the wallet in our database to get its ID, and current balance
-    const { data: wallet, error: fetchError } = await supabase
-    .from("wallets")
-    .select("id, balance")
-    .eq("address", toAddress)
-    .single();
-
-  if (fetchError || !wallet) {
-    console.log(`Wallet not in DB, skipping sweep for: ${toAddress}. Removing from processed transactions.`);
-    await supabase
-      .from("processed_transactions")
-      .delete()
-      .eq("signature", signature);
-    return;
-  }
-
-  // 2. Sweep the incoming amount to the dev wallet
-  const { sweepAmount } = await sweepFunds(
-    toAddress,
-    amount
-  );
-
-  // 3. After a successful sweep, update the user's wallet balance in our DB atomically
-  const { error: rpcError } = await supabase.rpc("increment_balance", {
-    wallet_address: toAddress,
-    amount_to_add: sweepAmount,
-  });
-
-  if (rpcError) {
-    console.error(
-      `Failed to update balance for wallet ${toAddress}:`,
-      rpcError
-    );
-    throw new Error(
-      `Failed to update balance for wallet ${toAddress}: ${rpcError.message}`
-    );
-  } else {
-    console.log(
-      `Successfully swept and updated balance for wallet ${toAddress}`
-    );
-    // Log the credit transaction after balance is successfully updated
-    await logTransaction({
-      wallet_id: wallet.id,
-      type: "credit",
-      amount: sweepAmount,
-      currency: "USDC",
-      description: `Received from ${fromAddress}`,
-      solana_signature: signature,
-    });
-    }
-  } catch (error) {
-    console.error(`Error processing transfer for ${toAddress}:`, error);
   }
 }

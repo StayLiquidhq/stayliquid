@@ -1,67 +1,71 @@
 import { NextRequest, NextResponse } from "next/server";
-import supabase from "../../../../utils/supabase";
-import {
-  Connection,
-  PublicKey,
-  Transaction,
-  Keypair,
-  SendTransactionError,
-} from "@solana/web3.js";
-import bs58 from "bs58";
-import {
-  getAssociatedTokenAddress,
-  createAssociatedTokenAccountInstruction,
-  createTransferInstruction,
-} from "@solana/spl-token";
-import { logTransaction } from "../../../../lib/transaction_history";
+import supabase from "@/utils/supabase";
+import { getOnChainTokenBalance } from "@/lib/cdp_balance";
+import { executeDirectTransfer } from "@/lib/cdp_transfers";
+import { parseChainWithFallback, parseTokenWithFallback } from "@/lib/tokens";
+import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
+import { withIdempotency } from "@/lib/idempotency";
+import { logger } from "@/lib/logger";
+import { requireEnv } from "@/lib/env";
 
-const SOLANA_RPC = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`;
-const USDC_MINT = new PublicKey(process.env.USDC_MINT!);
+interface PlanRecord {
+  id: string;
+  payout_method: string;
+  payout_wallet_address: string | null;
+  recurrent_payout: number | null;
+  frequency: string | null;
+  status: string;
+  next_payout_date: string | null;
+  chain: string | null;
+  token: string | null;
+  wallets: Array<{ id: string; address: string; chain_type: string }>;
+}
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
-
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+export async function OPTIONS(request: NextRequest) {
+  return handleCorsPreflight(request);
 }
 
 export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
   try {
-    // 1. Authenticate the service request
     const authHeader = request.headers.get("authorization");
-    const authToken = process.env.PAYOUT_AUTH_TOKEN;
+    const authToken = requireEnv("PAYOUT_AUTH_TOKEN");
 
     if (!authToken || authHeader !== `Bearer ${authToken}`) {
-      console.error("Unauthorized access attempt to payout endpoint.");
+      logger.warn("Unauthorized payout trigger attempt", { module: "plans/payout" });
+
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401, headers: corsHeaders }
       );
     }
 
-    // 2. Get plan_id from the request body
-    const { plan_id } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { plan_id } = body;
+
     if (!plan_id) {
-      console.error("Payout endpoint called without a plan_id.");
       return NextResponse.json(
         { error: "Missing plan_id" },
         { status: 400, headers: corsHeaders }
       );
     }
 
-    // 3. Fetch plan details
-    const { data: plan, error: planError } = await supabase
+    const { data: rawPlan, error: planError } = await supabase
       .from("plans")
       .select(
         `
+        id,
         payout_method,
         payout_wallet_address,
         recurrent_payout,
         frequency,
-        wallets (id, balance)
+        status,
+        next_payout_date,
+        chain,
+        token,
+        wallets (id, address, chain_type)
       `
       )
       .eq("id", plan_id)
@@ -69,259 +73,172 @@ export async function POST(request: NextRequest) {
 
     if (
       planError ||
-      !plan ||
-      !plan.wallets ||
-      !Array.isArray(plan.wallets) ||
-      plan.wallets.length === 0
+      !rawPlan ||
+      !rawPlan.wallets ||
+      !Array.isArray(rawPlan.wallets) ||
+      rawPlan.wallets.length === 0
     ) {
-      console.error(
-        `Failed to fetch plan or wallet for plan_id: ${plan_id}. Error:`,
-        planError?.message
-      );
+      logger.error("Plan or wallet not found", { module: "plans/payout", planId: plan_id }, planError);
+
       return NextResponse.json(
         { error: "Plan or wallet not found" },
         { status: 404, headers: corsHeaders }
       );
     }
 
+    // SAFETY: rawPlan existence and non-empty wallets array verified above
+    const plan = rawPlan as PlanRecord;
+
+    if (plan.status !== "active") {
+      return NextResponse.json(
+        { error: `Plan is not active (current status: ${plan.status})` },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+
     const wallet = plan.wallets[0];
     const payoutAmount = plan.recurrent_payout;
 
-    // Handle manual fiat payouts
     if (plan.payout_method === "fiat") {
-      console.log(`Plan ${plan_id} is a fiat payout. Skipping automated crypto transaction.`);
-      return NextResponse.json({ success: true, message: "Fiat payout skipped, handled by webhook." }, { headers: corsHeaders });
+      logger.info("Plan is a fiat payout. Skipping on-chain transfer.", {
+        module: "plans/payout",
+        planId: plan_id,
+      });
+
+      return NextResponse.json(
+        { success: true, message: "Fiat payout scheduled, handled by webhook." },
+        { headers: corsHeaders }
+      );
     }
 
-    // Proceed with crypto payout
     const recipientAddress = plan.payout_wallet_address;
+
     if (!recipientAddress) {
-      console.error(`Plan ${plan_id} is missing a payout_wallet_address.`);
       return NextResponse.json(
         { error: "Payout wallet address not set for this plan" },
         { status: 400, headers: corsHeaders }
       );
     }
 
-    if (payoutAmount <= 0) {
-      console.error(
-        `Plan ${plan_id} has a recurrent_payout of ${payoutAmount}, which is not valid.`
-      );
+    if (!payoutAmount || payoutAmount <= 0) {
       return NextResponse.json(
-        { error: "No recurrent payout amount set for this plan" },
+        { error: "Invalid recurrent payout amount for this plan" },
         { status: 400, headers: corsHeaders }
       );
     }
 
-    if (wallet.balance < payoutAmount) {
-      console.error(
-        `Plan ${plan_id} has insufficient balance. Wallet Balance: ${wallet.balance}, Payout Amount: ${payoutAmount}`
-      );
-      return NextResponse.json(
-        { error: "Insufficient balance for payout" },
-        { status: 400, headers: corsHeaders }
-      );
-    }
+    const chain = parseChainWithFallback(plan.chain, parseChainWithFallback(wallet.chain_type));
+    const tokenSymbol = parseTokenWithFallback(plan.token);
 
-    // 4. Environment variables and keypairs for the transaction
-    const payoutPrivateKey = process.env.PAYOUT_PRIVATE_KEY;
-    if (!payoutPrivateKey) {
-      console.error(
-        "CRITICAL: PAYOUT_PRIVATE_KEY environment variable is not set."
-      );
-      return NextResponse.json(
-        { error: "Payout wallet not configured on server" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
+    const payoutSlot = plan.next_payout_date ?? new Date().toISOString().slice(0, 10);
+    const idempotencyKey = `payout:${plan_id}:${payoutSlot}`;
 
-    const connection = new Connection(SOLANA_RPC);
-    const payoutKeypair = Keypair.fromSecretKey(bs58.decode(payoutPrivateKey));
-    const sender = payoutKeypair.publicKey;
-    const recipient = new PublicKey(recipientAddress);
+    return await withIdempotency(
+      request,
+      { scope: "plans/payout", key: idempotencyKey },
+      async () => {
+        const liveOnChainBalance = await getOnChainTokenBalance({
+          address: wallet.address,
+          chain,
+          token: tokenSymbol,
+        });
 
-    // 5. Get associated token accounts and check dev wallet balance
-    const senderTokenAccount = await getAssociatedTokenAddress(
-      USDC_MINT,
-      sender
-    );
-    const recipientTokenAccount = await getAssociatedTokenAddress(
-      USDC_MINT,
-      recipient
-    );
+        if (liveOnChainBalance < payoutAmount) {
+          logger.warn("Insufficient on-chain balance for recurring payout", {
+            module: "plans/payout",
+            planId: plan_id,
+            walletAddress: wallet.address,
+            onChainBalance: liveOnChainBalance,
+            requiredAmount: payoutAmount,
+            chain,
+            token: tokenSymbol,
+          });
 
-    try {
-      const senderTokenAccountInfo = await connection.getTokenAccountBalance(
-        senderTokenAccount
-      );
-      const senderBalance = senderTokenAccountInfo.value.uiAmount;
-      if (senderBalance === null || senderBalance < payoutAmount) {
-        console.error(
-          `Insufficient balance in dev payout wallet. Has: ${senderBalance}, Needs: ${payoutAmount}`
-        );
+          return NextResponse.json(
+            {
+              error: "Insufficient on-chain balance for payout",
+              details: { onChainBalance: liveOnChainBalance, payoutAmount },
+            },
+            { status: 400, headers: corsHeaders }
+          );
+        }
+
+        logger.info("Executing recurring payout directly from user Coinbase wallet", {
+          module: "plans/payout",
+          planId: plan_id,
+          senderWalletAddress: wallet.address,
+          recipientAddress,
+          payoutAmount,
+          chain,
+          token: tokenSymbol,
+        });
+
+        const { tx } = await executeDirectTransfer({
+          senderWalletAddress: wallet.address,
+          recipientAddress,
+          amount: payoutAmount,
+          chain,
+          token: tokenSymbol,
+        });
+
+        const now = new Date();
+        let next_payout_date: Date | null = new Date(now);
+
+        switch (plan.frequency?.toLowerCase()) {
+          case "daily":
+            next_payout_date.setDate(next_payout_date.getDate() + 1);
+            break;
+          case "weekly":
+            next_payout_date.setDate(next_payout_date.getDate() + 7);
+            break;
+          case "monthly":
+            next_payout_date.setMonth(next_payout_date.getMonth() + 1);
+            break;
+          default:
+            next_payout_date = null;
+            break;
+        }
+
+        const { error: recordError } = await supabase.rpc("record_recurring_payout", {
+          p_plan_id: plan_id,
+          p_wallet_id: wallet.id,
+          p_tx: tx,
+          p_amount: payoutAmount,
+          p_currency: tokenSymbol,
+          p_recipient: recipientAddress,
+          p_last_payout_date: now.toISOString(),
+          p_next_payout_date: next_payout_date ? next_payout_date.toISOString() : null,
+          p_is_solana: chain === "solana",
+        });
+
+        if (recordError) {
+          logger.error("Failed to persist recurring payout records", {
+            module: "plans/payout",
+            planId: plan_id,
+            tx,
+          }, recordError);
+        }
+
         return NextResponse.json(
           {
-            error:
-              "Insufficient funds in the payout wallet to process this transaction.",
+            success: true,
+            signature: tx,
+            txHash: tx,
+            payoutAmount,
+            chain,
+            token: tokenSymbol,
+            next_payout_date: next_payout_date?.toISOString(),
           },
-          { status: 503, headers: corsHeaders }
-        ); // 503 Service Unavailable is appropriate here
-      }
-    } catch (error) {
-      // This can happen if the token account doesn't exist yet.
-      console.error(
-        "Could not fetch dev payout wallet balance. It may not have a USDC token account.",
-        error
-      );
-      return NextResponse.json(
-        { error: "Could not verify the payout wallet's balance." },
-        { status: 500, headers: corsHeaders }
-      );
-    }
-
-    // 6. Build the transaction
-    const tx = new Transaction();
-    const recipientInfo = await connection.getAccountInfo(
-      recipientTokenAccount
-    );
-    if (!recipientInfo) {
-      tx.add(
-        createAssociatedTokenAccountInstruction(
-          sender,
-          recipientTokenAccount,
-          recipient,
-          USDC_MINT
-        )
-      );
-    }
-    tx.add(
-      createTransferInstruction(
-        senderTokenAccount,
-        recipientTokenAccount,
-        sender,
-        payoutAmount * 10 ** 6 // Adjust for USDC decimals
-      )
-    );
-    tx.feePayer = sender;
-    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
-    // 7. Sign and send the transaction
-    let signature: string;
-    try {
-        signature = await connection.sendTransaction(tx, [payoutKeypair]);
-        await connection.confirmTransaction(signature, "confirmed");
-    } catch (error) {
-        console.error("Solana transaction failed:", error);
-        // If the transaction fails, we do not proceed with database updates.
-        return NextResponse.json({ error: "Transaction failed to send or confirm." }, { status: 500, headers: corsHeaders });
-    }
-
-    // Idempotency: claim this payout's signature upfront. Requires unique constraint on processed_transactions.signature
-    const { error: claimError } = await supabase
-      .from("processed_transactions")
-      .insert({ signature });
-    if (claimError) {
-      if ((claimError as any).code === "23505") {
-        console.log(
-          `Payout transaction ${signature} already claimed. Skipping.`
-        );
-        return NextResponse.json(
-          { success: true, signature, message: "Payout already processed" },
           { headers: corsHeaders }
         );
       }
-      console.error(
-        `Failed to claim payout transaction ${signature}:`,
-        claimError
-      );
-      return NextResponse.json(
-        {
-          error: "Internal server error",
-          details: "Failed to claim payout transaction",
-        },
-        { status: 500, headers: corsHeaders }
-      );
-    }
-
-    // 8. Decrement wallet balance and update payout dates
-    const newBalance = wallet.balance - payoutAmount;
-    const now = new Date();
-    let next_payout_date: Date | null = new Date(now);
-
-    switch (plan.frequency.toLowerCase()) {
-      case "daily":
-        next_payout_date.setDate(next_payout_date.getDate() + 1);
-        break;
-      case "weekly":
-        next_payout_date.setDate(next_payout_date.getDate() + 7);
-        break;
-      case "monthly":
-        next_payout_date.setMonth(next_payout_date.getMonth() + 1);
-        break;
-      default:
-        // If frequency is unknown, set next payout to null to stop recurrence
-        next_payout_date = null;
-        break;
-    }
-
-    // 9. Log the transaction
-    try {
-      await logTransaction({
-        wallet_id: wallet.id,
-        type: "debit",
-        amount: payoutAmount,
-        currency: "USDC",
-        description: `Sent to ${recipientAddress}`,
-        solana_signature: signature,
-      });
-    } catch (e) {
-      console.error(
-        `Failed to log payout transaction for wallet ${wallet.id}:`,
-        e
-      );
-    }
-
-    // 10. Atomically update wallet and plan using the database function
-    const { error: rpcError } = await supabase.rpc("process_payout_update", {
-      p_plan_id: plan_id,
-      p_new_balance: newBalance,
-      p_last_payout_date: now.toISOString(),
-      p_next_payout_date: next_payout_date
-        ? next_payout_date.toISOString()
-        : null,
-    });
-
-    if (rpcError) {
-      console.error(
-        `CRITICAL: Transaction ${signature} succeeded but the atomic database update failed for plan ${plan_id}. Error: ${rpcError.message}`
-      );
-      // Release claim so it can be retried
-      await supabase
-        .from("processed_transactions")
-        .delete()
-        .eq("signature", signature);
-      return NextResponse.json(
-        { error: "Failed to update plan and wallet" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
-
-    return NextResponse.json(
-      { success: true, signature },
-      { headers: corsHeaders }
     );
   } catch (err) {
-    if (err instanceof SendTransactionError) {
-      const connection = new Connection(SOLANA_RPC);
-      err.getLogs(connection).then((logs) => {
-        console.error("Transaction failed logs:", logs);
-      });
-    }
-    const errorMessage =
-      err instanceof Error ? err.message : "An unknown error occurred";
-    console.error(err);
+    const errorObj = err instanceof Error ? err : new Error(String(err));
+    logger.error("Payout endpoint execution failed", { module: "plans/payout" }, errorObj);
+
     return NextResponse.json(
-      { error: errorMessage },
+      { error: errorObj.message },
       { status: 500, headers: corsHeaders }
     );
   }

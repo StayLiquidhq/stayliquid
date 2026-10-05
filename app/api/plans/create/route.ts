@@ -4,35 +4,15 @@ import { z } from "zod";
 import { createWallet } from "../../../../lib/CreateWallet";
 import { updateWebhookWithNewAddress } from "../../../../lib/update_webhook";
 
-// Strict CORS allowlist (same as break route)
-const ALLOWED_ORIGINS = new Set<string>([
-  "https://liquid-frontend-gray.vercel.app",
-  "https://liquid-frontend-aq6izit64-pleaseamsorry3-gmailcoms-projects.vercel.app",
-  "https://savewithliquid.xyz",
-  "https://savewithliquid.com",
-  "http://localhost:3000",
-]);
-
-function createCorsHeaders(origin: string | null): Record<string, string> {
-  const headers: Record<string, string> = {
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    Vary: "Origin",
-  };
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
-    headers["Access-Control-Allow-Origin"] = origin;
-  }
-  return headers;
-}
+import { handleCorsPreflight, validateOrigin } from "@/lib/cors";
+import { withIdempotency } from "@/lib/idempotency";
+import { recordAuditLog } from "@/lib/audit";
+import { logger } from "@/lib/logger";
 
 export async function OPTIONS(request: NextRequest) {
-  const origin = request.headers.get("origin");
-  const headers = createCorsHeaders(origin);
-  headers["Access-Control-Max-Age"] = "600";
-  return new NextResponse(null, { status: 204, headers });
+  return handleCorsPreflight(request);
 }
 
-// --- Zod Validation ---
 const payoutSchema = z.union([
   z.object({
     payout_method: z.literal("fiat"),
@@ -75,36 +55,38 @@ const planSchema = z.union([
 const createPlanSchema = z.intersection(planSchema, payoutSchema).and(
   z.object({
     name: z.string().min(1),
+    chain: z.enum(["base", "solana"]).default("solana"),
+    token: z.enum(["USDC", "USDT"]).default("USDC"),
   })
 );
 
-// --- Endpoint ---
 export async function POST(request: NextRequest) {
-  const origin = request.headers.get("origin");
-  const corsHeaders = createCorsHeaders(origin);
+  const { isAllowed, headers: corsHeaders } = validateOrigin(request);
+
+  if (!isAllowed) {
+    return NextResponse.json(
+      { error: "Origin not allowed" },
+      { status: 403, headers: corsHeaders }
+    );
+  }
+
   try {
-    // Enforce allowlist only when Origin is present (browser requests)
-    if (origin && !ALLOWED_ORIGINS.has(origin)) {
-      return NextResponse.json(
-        { error: "Origin not allowed" },
-        { status: 403, headers: corsHeaders }
-      );
-    }
-    // 1. Extract and validate the Bearer token from the header
     const authHeader = request.headers.get("authorization");
+
     if (!authHeader?.startsWith("Bearer ")) {
       return NextResponse.json(
         { error: "Unauthorized: Missing or invalid Authorization header" },
         { status: 401, headers: corsHeaders }
       );
     }
+
     const token = authHeader.split(" ")[1];
 
-    // 2. Verify the token and retrieve the authenticated user
     const {
       data: { user },
       error: authError,
     } = await supabase.auth.getUser(token);
+
     if (authError || !user) {
       return NextResponse.json(
         { error: "Unauthorized: Invalid or expired token" },
@@ -112,10 +94,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 3. Check user's plan count
     const { count, error: countError } = await supabase
       .from("plans")
-      .select("*", { count: "exact", head: true })
+      .select("id", { count: "exact", head: true })
       .eq("user_id", user.id);
 
     if (countError) {
@@ -132,19 +113,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 4. Validate body
     const body = await request.json();
     const validation = createPlanSchema.safeParse(body);
+
     if (!validation.success) {
       return NextResponse.json(
         { error: validation.error.format() },
         { status: 400, headers: corsHeaders }
       );
     }
+
     const validatedData = validation.data;
 
-    // 4. Calculate the first payout date for recurring plans
     let next_payout_date = null;
+
     if ("frequency" in validatedData && "payout_time" in validatedData) {
       const { frequency, payout_time } = validatedData;
       const now = new Date();
@@ -154,9 +136,11 @@ export async function POST(request: NextRequest) {
         case "daily":
           const [hours, minutes] = payout_time.split(":").map(Number);
           now.setHours(hours, minutes);
+
           if (now < new Date()) {
             now.setDate(now.getDate() + 1);
           }
+
           break;
         case "weekly":
           const weekdays = [
@@ -168,103 +152,71 @@ export async function POST(request: NextRequest) {
             "friday",
             "saturday",
           ];
+
           const targetDay = weekdays.indexOf(payout_time.toLowerCase());
           const currentDay = now.getDay();
           let dayDifference = targetDay - currentDay;
+
           if (dayDifference < 0) {
             dayDifference += 7;
           }
+
           now.setDate(now.getDate() + dayDifference);
           break;
         case "monthly":
           const targetDate = parseInt(payout_time, 10);
           now.setDate(targetDate);
+
           if (now < new Date()) {
             now.setMonth(now.getMonth() + 1);
           }
+
           break;
       }
+
       next_payout_date = now.toISOString();
     }
 
-    // 5. Insert plan
-    const { data: newPlan, error: planError } = await supabase
-      .from("plans")
-      .insert({
-        user_id: user.id,
-        ...validatedData,
-        next_payout_date: next_payout_date,
-      })
-      .select()
-      .single();
+    return await withIdempotency(
+      request,
+      { scope: "plans/create", userId: user.id, payload: validatedData },
+      async () => {
+        const { chain = "solana", token = "USDC", ...planFields } = validatedData;
 
-    if (planError) {
-      return NextResponse.json(
-        { error: "Failed to create plan" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
+        const wallet = await createWallet({ chain });
 
-    // Check and update has_created_plan status
-    const { data: userProfile, error: profileError } = await supabase
-      .from("users")
-      .select("has_created_plan")
-      .eq("auth_user_id", user.id)
-      .single();
+        const { data, error: createError } = await supabase.rpc("create_plan_and_wallet", {
+          p_user_id: user.id,
+          p_plan: { ...planFields, chain, token, next_payout_date },
+          p_wallet_address: wallet.address,
+        });
 
-    // Log profile fetch error but don't block
-    if (profileError) {
-      console.error("Error fetching user profile:", profileError.message);
-    }
+        if (createError || !data) {
+          logger.error(
+            "Failed to persist plan and wallet",
+            { module: "plans/create", userId: user.id },
+            createError,
+          );
 
-    if (userProfile && !userProfile.has_created_plan) {
-      const { error: updateUserError } = await supabase
-        .from("users")
-        .update({ has_created_plan: true })
-        .eq("auth_user_id", user.id);
+          return NextResponse.json(
+            { error: "Failed to create plan" },
+            { status: 500, headers: corsHeaders }
+          );
+        }
 
-      // Log update error but don't block
-      if (updateUserError) {
-        console.error(
-          "Failed to update has_created_plan:",
-          updateUserError.message
+        updateWebhookWithNewAddress(wallet.address);
+
+        recordAuditLog({ userId: user.id, eventType: "plan_create", request });
+
+        return NextResponse.json(
+          { plan: data.plan, wallet: data.wallet },
+          { status: 201, headers: corsHeaders }
         );
       }
-    }
-
-    // 5. Create wallet
-    const wallet = await createWallet();
-
-    // 6. Update the webhook with the new wallet address
-    // This is done asynchronously and does not block the response
-    updateWebhookWithNewAddress(wallet.address);
-
-    // 7. Save wallet in DB
-    const { data: newWallet, error: walletError } = await supabase
-      .from("wallets")
-      .insert({
-        plan_id: newPlan.id,
-        address: wallet.address,
-        chain_type: "solana",
-        balance: 0,
-      })
-      .select()
-      .single();
-
-    if (walletError) {
-      return NextResponse.json(
-        { error: "Plan created but wallet failed" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
-
-    // 8. Return response
-    return NextResponse.json(
-      { plan: newPlan, wallet: newWallet },
-      { status: 201, headers: corsHeaders }
     );
   } catch (err) {
     console.error("Unexpected error:", err);
+
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500, headers: corsHeaders }

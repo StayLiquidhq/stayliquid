@@ -24,6 +24,9 @@
 .DS_Store
 *.pem
 
+# maxmind geoip database (downloaded at startup)
+/data/*.mmdb
+
 
 # debug
 npm-debug.log*

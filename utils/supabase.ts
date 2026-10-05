@@ -1,17 +1,16 @@
-import {createClient} from "@supabase/supabase-js"
+import { createClient } from "@supabase/supabase-js";
+import { Database } from "@/lib/supabase/types";
+import { requireEnv } from "@/lib/env";
 
-const SUPABASE_URL = process.env.SUPABASE_URL
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+const SUPABASE_URL = requireEnv("SUPABASE_URL");
 
-if(!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY){
-    throw Error('missing environment variables for Supabase service client')
-}
+const SUPABASE_SECRET_KEY = requireEnv("SUPABASE_SECRET_KEY");
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: {
-        autoRefreshToken: false,
-        persistSession: false
-    }
-})
+const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_SECRET_KEY, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false,
+  },
+});
 
-export default supabase
+export default supabase;

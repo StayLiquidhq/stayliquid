@@ -1,9 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
+  reactStrictMode: true,
+  serverExternalPackages: ["@maxmind/geoip2-node"],
 };
 
 export default nextConfig;

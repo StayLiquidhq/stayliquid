@@ -1,6 +1,5 @@
 import { CdpClient } from "@coinbase/cdp-sdk";
 
-// Check required CDP environment variables
 if (
   !process.env.CDP_API_KEY_ID ||
   !process.env.CDP_API_KEY_SECRET ||
@@ -11,7 +10,6 @@ if (
   );
 }
 
-// Initialize the CDP client with verified environment variables
 const cdp = new CdpClient();
 
 export default cdp;

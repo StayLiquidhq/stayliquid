@@ -1,47 +1,49 @@
 import { NextRequest, NextResponse } from "next/server";
-import supabase from "../../../../utils/supabase";
-import {
-  Connection,
-  PublicKey,
-  Transaction,
-  Keypair,
-  SendTransactionError,
-} from "@solana/web3.js";
-import bs58 from "bs58";
-import {
-  getAssociatedTokenAddress,
-  createAssociatedTokenAccountInstruction,
-  createTransferInstruction,
-} from "@solana/spl-token";
-import { logTransaction } from "../../../../lib/transaction_history";
+import supabase from "@/utils/supabase";
+import { getOnChainTokenBalance } from "@/lib/cdp_balance";
+import { executeDirectTransfer } from "@/lib/cdp_transfers";
+import { parseChainWithFallback, parseTokenWithFallback } from "@/lib/tokens";
+import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
+import { withIdempotency } from "@/lib/idempotency";
+import { recordAuditLog } from "@/lib/audit";
+import { logger } from "@/lib/logger";
+import { requireEnv } from "@/lib/env";
 
-const SOLANA_RPC = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`;
-const USDC_MINT = new PublicKey(process.env.USDC_MINT!);
+interface PlanRecord {
+  id: string;
+  user_id: string;
+  payout_method: string;
+  payout_wallet_address: string | null;
+  status: string;
+  chain: string | null;
+  token: string | null;
+  wallets: Array<{ id: string; address: string; chain_type: string }>;
+}
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
-
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+export async function OPTIONS(request: NextRequest) {
+  return handleCorsPreflight(request);
 }
 
 export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
   try {
-    // 1. Authenticate the service request
     const authHeader = request.headers.get("authorization");
-    const authToken = process.env.PAYOUT_AUTH_TOKEN;
+    const authToken = requireEnv("PAYOUT_AUTH_TOKEN");
+
     if (!authToken || authHeader !== `Bearer ${authToken}`) {
+      logger.warn("Unauthorized target payout trigger attempt", { module: "plans/payout-target" });
+
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401, headers: corsHeaders }
       );
     }
 
-    // 2. Get plan_id from the request body
-    const { plan_id } = await request.json();
+    const body = await request.json().catch(() => ({}));
+    const { plan_id } = body;
+
     if (!plan_id) {
       return NextResponse.json(
         { error: "Missing plan_id" },
@@ -49,14 +51,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 3. Fetch plan details
-    const { data: plan, error: planError } = await supabase
+    const { data: rawPlan, error: planError } = await supabase
       .from("plans")
       .select(
         `
+        id,
+        user_id,
         payout_method,
         payout_wallet_address,
-        wallets (id)
+        status,
+        chain,
+        token,
+        wallets (id, address, chain_type)
       `
       )
       .eq("id", plan_id)
@@ -64,27 +70,45 @@ export async function POST(request: NextRequest) {
 
     if (
       planError ||
-      !plan ||
-      !plan.wallets ||
-      !Array.isArray(plan.wallets) ||
-      plan.wallets.length === 0
+      !rawPlan ||
+      !rawPlan.wallets ||
+      !Array.isArray(rawPlan.wallets) ||
+      rawPlan.wallets.length === 0
     ) {
+      logger.error("Plan or wallet not found", { module: "plans/payout-target", planId: plan_id }, planError);
+
       return NextResponse.json(
         { error: "Plan or wallet not found" },
         { status: 404, headers: corsHeaders }
       );
     }
 
-    const walletId = plan.wallets[0].id;
+    // SAFETY: rawPlan existence and non-empty wallets array verified above
+    const plan = rawPlan as PlanRecord;
 
-    // Handle manual fiat payouts for target plans
-    if (plan.payout_method === "fiat") {
-      console.log(`Acknowledging manual fiat payout for target plan_id: ${plan_id}.`);
-      return NextResponse.json({ success: true, message: "Fiat target payout acknowledged for manual processing." }, { headers: corsHeaders });
+    if (plan.status !== "active") {
+      return NextResponse.json(
+        { error: `Plan is already ${plan.status}` },
+        { status: 400, headers: corsHeaders }
+      );
     }
 
-    // Proceed with crypto payout
+    const wallet = plan.wallets[0];
+
+    if (plan.payout_method === "fiat") {
+      logger.info("Plan is a fiat payout. Skipping on-chain transfer.", {
+        module: "plans/payout-target",
+        planId: plan_id,
+      });
+
+      return NextResponse.json(
+        { success: true, message: "Fiat target payout acknowledged." },
+        { headers: corsHeaders }
+      );
+    }
+
     const recipientAddress = plan.payout_wallet_address;
+
     if (!recipientAddress) {
       return NextResponse.json(
         { error: "Payout wallet address not set" },
@@ -92,193 +116,91 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 4. Fetch the current balance without resetting it yet
-    const { data: wallet, error: walletError } = await supabase
-      .from('wallets')
-      .select('balance')
-      .eq('id', walletId)
-      .single();
+    const chain = parseChainWithFallback(plan.chain, parseChainWithFallback(wallet.chain_type));
+    const tokenSymbol = parseTokenWithFallback(plan.token);
 
-    if (walletError || !wallet) {
-        return NextResponse.json({ error: 'Failed to fetch wallet balance' }, { status: 500, headers: corsHeaders });
-    }
+    return await withIdempotency(
+      request,
+      { scope: "plans/payout-target", key: `payout-target:${plan_id}` },
+      async () => {
+        const liveOnChainBalance = await getOnChainTokenBalance({
+          address: wallet.address,
+          chain,
+          token: tokenSymbol,
+        });
 
-    const totalAmount = wallet.balance;
+        if (liveOnChainBalance <= 0) {
+          logger.warn("Zero on-chain balance for target payout", {
+            module: "plans/payout-target",
+            planId: plan_id,
+            walletAddress: wallet.address,
+            chain,
+            token: tokenSymbol,
+          });
 
-    if (totalAmount <= 0) {
-      return NextResponse.json(
-        { error: "No balance to pay out" },
-        { status: 400, headers: corsHeaders }
-      );
-    }
+          return NextResponse.json(
+            { error: "No balance to pay out in wallet" },
+            { status: 400, headers: corsHeaders }
+          );
+        }
 
-    // 5. Environment variables and keypairs
-    const payoutPrivateKey = process.env.PAYOUT_PRIVATE_KEY;
-    if (!payoutPrivateKey) {
-      return NextResponse.json(
-        { error: "Payout wallet not configured" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
+        logger.info("Executing target payout directly from user Coinbase wallet", {
+          module: "plans/payout-target",
+          planId: plan_id,
+          senderWalletAddress: wallet.address,
+          recipientAddress,
+          payoutAmount: liveOnChainBalance,
+          chain,
+          token: tokenSymbol,
+        });
 
-    const connection = new Connection(SOLANA_RPC);
-    const payoutKeypair = Keypair.fromSecretKey(bs58.decode(payoutPrivateKey));
-    const sender = payoutKeypair.publicKey;
-    const recipient = new PublicKey(recipientAddress);
+        const { tx } = await executeDirectTransfer({
+          senderWalletAddress: wallet.address,
+          recipientAddress,
+          amount: liveOnChainBalance,
+          chain,
+          token: tokenSymbol,
+        });
 
-    // 6. Get associated token accounts and check dev wallet balance
-    const senderTokenAccount = await getAssociatedTokenAddress(
-      USDC_MINT,
-      sender
-    );
-    const recipientTokenAccount = await getAssociatedTokenAddress(
-      USDC_MINT,
-      recipient
-    );
+        const { error: recordError } = await supabase.rpc("record_target_payout", {
+          p_plan_id: plan_id,
+          p_wallet_id: wallet.id,
+          p_tx: tx,
+          p_amount: liveOnChainBalance,
+          p_currency: tokenSymbol,
+          p_recipient: recipientAddress,
+          p_is_solana: chain === "solana",
+        });
 
-    try {
-      const senderTokenAccountInfo = await connection.getTokenAccountBalance(
-        senderTokenAccount
-      );
-      const senderBalance = senderTokenAccountInfo.value.uiAmount;
-      if (senderBalance === null || senderBalance < totalAmount) {
+        if (recordError) {
+          logger.error("Failed to persist target payout records", {
+            module: "plans/payout-target",
+            planId: plan_id,
+            tx,
+          }, recordError);
+        }
+
+        recordAuditLog({ userId: plan.user_id, eventType: "payout", request });
+
         return NextResponse.json(
-          { error: "Insufficient funds in the payout wallet." },
-          { status: 503 }
-        );
-      }
-    } catch (error) {
-      return NextResponse.json(
-        { error: "Could not verify the payout wallet's balance." },
-        { status: 500 }
-      );
-    }
-
-    // 7. Build the transaction
-    const tx = new Transaction();
-    const recipientInfo = await connection.getAccountInfo(
-      recipientTokenAccount
-    );
-    if (!recipientInfo) {
-      tx.add(
-        createAssociatedTokenAccountInstruction(
-          sender,
-          recipientTokenAccount,
-          recipient,
-          USDC_MINT
-        )
-      );
-    }
-    tx.add(
-      createTransferInstruction(
-        senderTokenAccount,
-        recipientTokenAccount,
-        sender,
-        totalAmount * 10 ** 6
-      )
-    );
-    tx.feePayer = sender;
-    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
-    // 8. Sign and send the transaction
-    let signature: string;
-    try {
-        signature = await connection.sendTransaction(tx, [payoutKeypair]);
-        await connection.confirmTransaction(signature, "confirmed");
-    } catch (error) {
-        console.error("Solana transaction failed:", error);
-        // IMPORTANT: Since the transaction failed, we do not proceed. The user's balance was never reset.
-        return NextResponse.json({ error: "Transaction failed to send or confirm." }, { status: 500, headers: corsHeaders });
-    }
-
-    // 9. Atomically reset the user's balance AFTER successful transaction
-    const { error: rpcError } = await supabase.rpc(
-      "reset_wallet_balance",
-      { p_wallet_id: walletId }
-    );
-
-    if (rpcError) {
-        console.error(`CRITICAL: Transaction ${signature} succeeded, but failed to reset wallet balance for wallet ${walletId}. Manual intervention required.`);
-        // At this point, the user has been paid, but their balance is not zeroed in the DB.
-        // This is a critical state that requires manual monitoring and intervention.
-        // For this implementation, we will proceed but log the error.
-    }
-
-    // Idempotency: claim this payout's signature upfront. Requires unique constraint on processed_transactions.signature
-    const { error: claimError } = await supabase
-      .from("processed_transactions")
-      .insert({ signature });
-    if (claimError) {
-      if ((claimError as any).code === "23505") {
-        console.log(
-          `Payout transaction ${signature} already claimed. Skipping.`
-        );
-        return NextResponse.json(
-          { success: true, signature, message: "Payout already processed" },
+          {
+            success: true,
+            signature: tx,
+            txHash: tx,
+            payoutAmount: liveOnChainBalance,
+            chain,
+            token: tokenSymbol,
+          },
           { headers: corsHeaders }
         );
       }
-      console.error(
-        `Failed to claim payout transaction ${signature}:`,
-        claimError
-      );
-      return NextResponse.json(
-        {
-          error: "Internal server error",
-          details: "Failed to claim payout transaction",
-        },
-        { status: 500, headers: corsHeaders }
-      );
-    }
-
-    // 9. Log the final payout transaction
-    try {
-      await logTransaction({
-        wallet_id: walletId,
-        type: "debit",
-        amount: totalAmount,
-        currency: "USDC",
-        description: `Target plan payout to ${recipientAddress}`,
-        solana_signature: signature,
-      });
-    } catch (e) {
-      console.error(
-        `Failed to log payout transaction for wallet ${walletId}:`,
-        e
-      );
-    }
-
-    // 10. Mark the plan as completed
-    const { error: updateError } = await supabase
-      .from("plans")
-      .update({ status: "completed" })
-      .eq("id", plan_id);
-    if (updateError) {
-      console.error(
-        `Failed to update plan ${plan_id} as completed after transaction ${signature}:`,
-        updateError
-      );
-      // Release claim so it can be retried
-      await supabase
-        .from("processed_transactions")
-        .delete()
-        .eq("signature", signature);
-      return NextResponse.json(
-        { error: "Failed to mark plan as completed" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
-
-    return NextResponse.json(
-      { success: true, signature },
-      { headers: corsHeaders }
     );
   } catch (err) {
-    const errorMessage =
-      err instanceof Error ? err.message : "An unknown error occurred";
-    console.error(err);
+    const errorObj = err instanceof Error ? err : new Error(String(err));
+    logger.error("Target payout execution failed", { module: "plans/payout-target" }, errorObj);
+
     return NextResponse.json(
-      { error: errorMessage },
+      { error: errorObj.message },
       { status: 500, headers: corsHeaders }
     );
   }

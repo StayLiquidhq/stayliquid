@@ -1,17 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import supabase from "../../../../utils/supabase";
-import { logTransaction } from "../../../../lib/transaction_history";
+import supabase from "@/utils/supabase";
 import { z } from "zod";
-import { decrementBalance, incrementBalance } from "../../../../lib/balance";
+import { executeDirectTransfer } from "@/lib/cdp_transfers";
+import { parseChainWithFallback, parseTokenWithFallback } from "@/lib/tokens";
+import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
+import { withIdempotency } from "@/lib/idempotency";
+import { logger } from "@/lib/logger";
+import { requireEnv } from "@/lib/env";
+import { getPlatformFeesWallet } from "@/lib/treasury";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
-
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+export async function OPTIONS(request: NextRequest) {
+  return handleCorsPreflight(request);
 }
 
 const fiatPayoutSchema = z.object({
@@ -24,26 +23,32 @@ const fiatPayoutSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
   try {
-    // 1. Authenticate the service request
     const authHeader = request.headers.get("authorization");
-    const authToken = process.env.FIAT_PAYOUT_AUTH_TOKEN;
+    const authToken = requireEnv("PAYOUT_AUTH_TOKEN");
+
     if (!authToken || authHeader !== `Bearer ${authToken}`) {
+      logger.warn("Unauthorized fiat webhook request", { module: "plans/fiat-webhook" });
+
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401, headers: corsHeaders }
       );
     }
 
-    // 2. Validate body
-    const body = await request.json();
+    const body = await request.json().catch(() => ({}));
     const validation = fiatPayoutSchema.safeParse(body);
+
     if (!validation.success) {
       return NextResponse.json(
         { error: validation.error.format() },
         { status: 400, headers: corsHeaders }
       );
     }
+
     const {
       plan_id,
       wallet_id,
@@ -53,151 +58,81 @@ export async function POST(request: NextRequest) {
       description,
     } = validation.data;
 
-    // 3. Sweep funds from the user's wallet
-    try {
-      console.log(`Sweeping funds for plan ${plan_id}:`, {
-        user_wallet_address,
-        amount,
-      });
-    } catch (sweepError) {
-      console.error(`Failed to sweep funds for plan ${plan_id}:`, sweepError);
-      return NextResponse.json(
-        { error: "Failed to sweep funds" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
+    return await withIdempotency(
+      request,
+      { scope: "plans/fiat-webhook", key: `fiat-payout:${fiat_transaction_id}` },
+      async () => {
+        const { data: plan, error: planError } = await supabase
+          .from("plans")
+          .select("plan_type, frequency, chain, token")
+          .eq("id", plan_id)
+          .single();
 
-    // 4. Atomically decrement wallet balance with idempotency
-    const idempotencyKey = `fiat:${fiat_transaction_id}`;
-    const { error: decError } = await decrementBalance({
-      walletId: wallet_id,
-      amount,
-      idempotencyKey,
-    });
+        if (planError || !plan) {
+          logger.error("Failed to fetch plan details for fiat payout", {
+            module: "plans/fiat-webhook",
+            planId: plan_id,
+          }, planError);
 
-    if (decError) {
-      console.error(
-        `CRITICAL: Funds swept but failed to decrement balance for wallet ${wallet_id}.`,
-        decError
-      );
-      return NextResponse.json(
-        { error: "Failed to update wallet balance after sweeping funds" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
+          return NextResponse.json(
+            { error: "Failed to fetch plan details" },
+            { status: 500, headers: corsHeaders }
+          );
+        }
 
-    // 5. Log the fiat transaction
-    const { error: logError } = await logTransaction({
-      wallet_id,
-      type: "debit",
-      amount,
-      currency: "USDC",
-      description,
-      fiat_transaction_id,
-    });
+        const chain = parseChainWithFallback(plan.chain);
+        const tokenSymbol = parseTokenWithFallback(plan.token);
 
-    if (logError) {
-      // At this point, funds have been swept and balance decremented. Compensate by re-incrementing.
-      await incrementBalance({
-        walletId: wallet_id,
-        amount,
-        idempotencyKey: `${idempotencyKey}:compensation`,
-      });
-      console.error(
-        `CRITICAL: Funds swept but failed to log transaction for plan ${plan_id}.`
-      );
-      return NextResponse.json(
-        { error: "Failed to log fiat transaction after sweeping funds" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
+        const treasury = getPlatformFeesWallet(chain);
+        logger.info("Transferring settlement tokens for fiat payout", {
+          module: "plans/fiat-webhook",
+          planId: plan_id,
+          walletAddress: user_wallet_address,
+          treasury,
+          amount,
+          chain,
+          token: tokenSymbol,
+        });
 
-    // 6. Fetch the plan to determine how to update it
-    const { data: plan, error: planError } = await supabase
-      .from("plans")
-      .select("plan_type, frequency")
-      .eq("id", plan_id)
-      .single();
+        const { tx } = await executeDirectTransfer({
+          senderWalletAddress: user_wallet_address,
+          recipientAddress: treasury,
+          amount,
+          chain,
+          token: tokenSymbol,
+        });
 
-    if (planError) {
-      console.error(
-        `CRITICAL: Transaction logged but failed to fetch plan ${plan_id} for final update.`
-      );
-      return NextResponse.json(
-        { error: "Failed to fetch plan details for final update" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
+        const { error: recordError } = await supabase.rpc("record_fiat_payout", {
+          p_plan_id: plan_id,
+          p_wallet_id: wallet_id,
+          p_amount: amount,
+          p_currency: tokenSymbol,
+          p_description: description,
+          p_fiat_transaction_id: fiat_transaction_id,
+          p_tx: tx,
+          p_is_solana: chain === "solana",
+        });
 
-    // 7. Update the plan based on its type
-    if (plan.plan_type === "target") {
-      const { error: updateError } = await supabase
-        .from("plans")
-        .update({
-          status: "completed",
-          last_payout_date: new Date().toISOString(),
-        })
-        .eq("id", plan_id);
+        if (recordError) {
+          logger.error("Failed to persist fiat payout records", {
+            module: "plans/fiat-webhook",
+            planId: plan_id,
+            fiatTransactionId: fiat_transaction_id,
+          }, recordError);
+        }
 
-      if (updateError) {
-        console.error(
-          `CRITICAL: Failed to mark target plan ${plan_id} as completed.`
-        );
         return NextResponse.json(
-          { error: "Failed to mark target plan as completed" },
-          { status: 500, headers: corsHeaders }
+          { success: true, signature: tx, message: "Fiat payout settled and processed successfully." },
+          { headers: corsHeaders }
         );
       }
-    } else {
-      const now = new Date();
-      let next_payout_date: Date | null = new Date(now);
-
-      switch (plan.frequency.toLowerCase()) {
-        case "daily":
-          next_payout_date.setDate(next_payout_date.getDate() + 1);
-          break;
-        case "weekly":
-          next_payout_date.setDate(next_payout_date.getDate() + 7);
-          break;
-        case "monthly":
-          next_payout_date.setMonth(next_payout_date.getMonth() + 1);
-          break;
-        default:
-          next_payout_date = null;
-          break;
-      }
-
-      const { error: updateError } = await supabase
-        .from("plans")
-        .update({
-          last_payout_date: now.toISOString(),
-          next_payout_date: next_payout_date
-            ? next_payout_date.toISOString()
-            : null,
-        })
-        .eq("id", plan_id);
-
-      if (updateError) {
-        console.error(
-          `CRITICAL: Failed to update next payout date for recurring plan ${plan_id}.`
-        );
-        return NextResponse.json(
-          { error: "Failed to update recurring plan payout dates" },
-          { status: 500, headers: corsHeaders }
-        );
-      }
-    }
-
-    return NextResponse.json(
-      { success: true, message: "Fiat payout processed successfully." },
-      { headers: corsHeaders }
     );
   } catch (err) {
-    const errorMessage =
-      err instanceof Error ? err.message : "An unknown error occurred";
-    console.error(err);
+    const errorObj = err instanceof Error ? err : new Error(String(err));
+    logger.error("Fiat payout webhook error", { module: "plans/fiat-webhook" }, errorObj);
+
     return NextResponse.json(
-      { error: errorMessage },
+      { error: errorObj.message },
       { status: 500, headers: corsHeaders }
     );
   }

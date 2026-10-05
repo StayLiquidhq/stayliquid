@@ -10,19 +10,17 @@ export async function GET(request: NextRequest) {
     }
 
     try {
-        // Use your utility function
-        const response = NextResponse.redirect(`${origin}/auth/auth-code-error`) // Default error redirect
+        const response = NextResponse.redirect(`${origin}/auth/auth-code-error`)
         const supabase = createSupabaseServerClient(request, response)
 
-        // Exchange code for session
         const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+
         if (exchangeError) throw exchangeError
 
-        // Get user
         const { data: { user }, error: userError } = await supabase.auth.getUser()
+
         if (userError || !user) throw userError || new Error('No user found')
 
-        // Create/fetch user in your database
         const userResponse = await fetch(`${origin}/api/user/create`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -35,10 +33,11 @@ export async function GET(request: NextRequest) {
         })
 
         const userData = await userResponse.json()
+
         if (userData.error) throw new Error(userData.error)
 
-        // Update redirect URL and return response with cookies already set
         const redirectUrl = userData.new ? `${origin}/onboarding` : `${origin}/dashboard`
+
         return NextResponse.redirect(redirectUrl, { 
             status: 302,
             headers: response.headers 
@@ -46,6 +45,7 @@ export async function GET(request: NextRequest) {
 
     } catch (error) {
         console.error('Callback error:', error)
+
         return NextResponse.redirect(`${origin}/auth/auth-code-error`)
     }
 }

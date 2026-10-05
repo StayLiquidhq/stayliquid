@@ -1,111 +1,84 @@
 import { NextRequest, NextResponse } from "next/server";
-import supabase from "@/utils/supabase";
-import {
-  Connection,
-  PublicKey,
-  Transaction,
-  Keypair,
-  SendTransactionError,
-} from "@solana/web3.js";
-import bs58 from "bs58";
-import {
-  getAssociatedTokenAddress,
-  createAssociatedTokenAccountInstruction,
-  createTransferInstruction,
-} from "@solana/spl-token";
-import { logTransaction } from "../../../../lib/transaction_history";
-import { getTransactionStatus } from "../../../../lib/transaction_status";
 import { z } from "zod";
+import supabase from "@/utils/supabase";
+import { getOnChainTokenBalance } from "@/lib/cdp_balance";
+import { executeSplitPayout } from "@/lib/cdp_transfers";
+import { parseChainWithFallback, parseTokenWithFallback } from "@/lib/tokens";
+import { getPlatformFeesWallet } from "@/lib/treasury";
+import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
+import { withIdempotency } from "@/lib/idempotency";
+import { recordAuditLog } from "@/lib/audit";
+import { logger } from "@/lib/logger";
 
-const SOLANA_RPC = `${process.env.HELIUS_URL}/?api-key=${process.env.HELIUS_API_KEY}`;
-const USDC_MINT = new PublicKey(process.env.USDC_MINT!);
-
-// Strict CORS allowlist
-const ALLOWED_ORIGINS = new Set<string>([
-  "http://localhost:3000",
-  "https://liquid-frontend-gray.vercel.app",
-  "https://liquid-frontend-aq6izit64-pleaseamsorry3-gmailcoms-projects.vercel.app",
-  "https://savewithliquid.xyz",
-  "https://savewithliquid.com",
-]);
-
-function createCorsHeaders(origin: string | null): Record<string, string> {
-  const headers: Record<string, string> = {
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    Vary: "Origin",
-  };
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
-    headers["Access-Control-Allow-Origin"] = origin;
-  }
-  return headers;
+interface PlanRecord {
+  id: string;
+  user_id: string;
+  status: string;
+  payout_wallet_address: string | null;
+  chain: string | null;
+  token: string | null;
+  wallets: Array<{ id: string; address: string; chain_type: string }>;
 }
 
-// Request body validation
 const BreakRequestSchema = z.object({
-  plan_id: z.union([
-    z.string().min(1, "plan_id is required"),
-    z.number().int().positive(),
-  ]),
+  plan_id: z.string().uuid("Invalid plan_id format"),
 });
 
 export async function OPTIONS(request: NextRequest) {
-  const origin = request.headers.get("origin");
-  const headers = createCorsHeaders(origin);
-  headers["Access-Control-Max-Age"] = "600";
-  return new NextResponse(null, { status: 204, headers });
+  return handleCorsPreflight(request);
 }
 
 export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
-  const corsHeaders = createCorsHeaders(origin);
-  try {
-    // Enforce allowlist only when Origin header is present (browser requests)
-    if (origin && !ALLOWED_ORIGINS.has(origin)) {
-      return NextResponse.json(
-        { error: "Origin not allowed" },
-        { status: 403, headers: corsHeaders }
-      );
-    }
+  const corsHeaders = getCorsHeaders(origin);
 
-    // 1. Authenticate the user
+  try {
     const authHeader = request.headers.get("authorization");
+
     if (!authHeader?.startsWith("Bearer ")) {
       return NextResponse.json(
-        { error: "Unauthorized" },
+        { error: "Unauthorized: Missing or invalid Authorization header" },
         { status: 401, headers: corsHeaders }
       );
     }
+
     const token = authHeader.split(" ")[1];
+
     const {
       data: { user },
       error: authError,
     } = await supabase.auth.getUser(token);
+
     if (authError || !user) {
       return NextResponse.json(
-        { error: "Unauthorized" },
+        { error: "Unauthorized: Invalid or expired token" },
         { status: 401, headers: corsHeaders }
       );
     }
 
-    // 2. Validate request body
-    const json = await request.json().catch(() => null);
-    const parsed = BreakRequestSchema.safeParse(json);
+    const body = await request.json().catch(() => null);
+    const parsed = BreakRequestSchema.safeParse(body);
+
     if (!parsed.success) {
       return NextResponse.json(
         { error: "Invalid request body", details: parsed.error.flatten() },
         { status: 400, headers: corsHeaders }
       );
     }
+
     const { plan_id } = parsed.data;
 
-    // 3. Fetch plan details to get the payout address and wallet ID
-    const { data: plan, error: planError } = await supabase
+    const { data: rawPlan, error: planError } = await supabase
       .from("plans")
       .select(
         `
+        id,
+        user_id,
+        status,
         payout_wallet_address,
-        wallets (id)
+        chain,
+        token,
+        wallets (id, address, chain_type)
       `
       )
       .eq("id", plan_id)
@@ -114,10 +87,10 @@ export async function POST(request: NextRequest) {
 
     if (
       planError ||
-      !plan ||
-      !plan.wallets ||
-      !Array.isArray(plan.wallets) ||
-      plan.wallets.length === 0
+      !rawPlan ||
+      !rawPlan.wallets ||
+      !Array.isArray(rawPlan.wallets) ||
+      rawPlan.wallets.length === 0
     ) {
       return NextResponse.json(
         { error: "Plan or wallet not found" },
@@ -125,190 +98,110 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const walletId = plan.wallets[0].id;
+    // SAFETY: rawPlan existence and non-empty wallets array verified above
+    const plan = rawPlan as PlanRecord;
+
+    if (plan.status !== "active") {
+      return NextResponse.json(
+        { error: `Cannot break plan with status '${plan.status}'` },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+
+    const wallet = plan.wallets[0];
     const recipientAddress = plan.payout_wallet_address;
 
     if (!recipientAddress) {
       return NextResponse.json(
-        { error: "Payout wallet address not set" },
+        { error: "Payout wallet address not configured for this plan" },
         { status: 400, headers: corsHeaders }
       );
     }
 
-    // 4. Atomically fetch and reset the user's balance
-    const { data: totalAmount, error: rpcError } = await supabase.rpc(
-      "reset_wallet_balance",
-      { p_wallet_id: walletId }
-    );
+    const chain = parseChainWithFallback(plan.chain, parseChainWithFallback(wallet.chain_type));
+    const tokenSymbol = parseTokenWithFallback(plan.token);
 
-    if (rpcError || totalAmount === null) {
-      return NextResponse.json(
-        { error: "Failed to fetch or reset balance" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
+    return await withIdempotency(
+      request,
+      { scope: "plans/break", userId: user.id, payload: { plan_id } },
+      async () => {
+        const liveOnChainBalance = await getOnChainTokenBalance({
+          address: wallet.address,
+          chain,
+          token: tokenSymbol,
+        });
 
-    if (totalAmount <= 0) {
-      return NextResponse.json(
-        { error: "No balance to break" },
-        { status: 400, headers: corsHeaders }
-      );
-    }
+        if (liveOnChainBalance <= 0) {
+          logger.warn("Zero on-chain balance to break", {
+            module: "plans/break",
+            planId: plan_id,
+            walletAddress: wallet.address,
+            chain,
+            token: tokenSymbol,
+          });
 
-    // 5. Calculate fees and payout
-    const feeAmount = totalAmount * 0.05;
-    const payoutAmount = totalAmount - feeAmount;
+          return NextResponse.json(
+            { error: "No balance to break in this wallet" },
+            { status: 400, headers: corsHeaders }
+          );
+        }
 
-    // 6. Environment variables and keypairs
-    const payoutPrivateKey = process.env.PAYOUT_PRIVATE_KEY;
-    if (!payoutPrivateKey) {
-      return NextResponse.json(
-        { error: "Payout wallet not configured" },
-        { status: 500, headers: corsHeaders }
-      );
-    }
+        const feeTreasury = getPlatformFeesWallet(chain);
 
-    const connection = new Connection(SOLANA_RPC);
-    const payoutKeypair = Keypair.fromSecretKey(bs58.decode(payoutPrivateKey));
-    const sender = payoutKeypair.publicKey;
-    const recipient = new PublicKey(recipientAddress);
+        const result = await executeSplitPayout({
+          senderWalletAddress: wallet.address,
+          recipientAddress,
+          feeTreasuryAddress: feeTreasury,
+          totalAmount: liveOnChainBalance,
+          feePercent: 0.05,
+          chain,
+          token: tokenSymbol,
+        });
 
-    // 7. Get associated token accounts
-    const senderTokenAccount = await getAssociatedTokenAddress(
-      USDC_MINT,
-      sender
-    );
-    const recipientTokenAccount = await getAssociatedTokenAddress(
-      USDC_MINT,
-      recipient
-    );
+        const { error: recordError } = await supabase.rpc("record_plan_break", {
+          p_plan_id: plan_id,
+          p_wallet_id: wallet.id,
+          p_payout_tx: result.payoutTx,
+          p_fee_tx: result.feeTx,
+          p_payout_amount: result.payoutAmount,
+          p_fee_amount: result.feeAmount,
+          p_currency: tokenSymbol,
+          p_is_solana: chain === "solana",
+          p_recipient: recipientAddress,
+        });
 
-    // 8. Build the transaction
-    const tx = new Transaction();
-    const recipientInfo = await connection.getAccountInfo(
-      recipientTokenAccount
-    );
-    if (!recipientInfo) {
-      tx.add(
-        createAssociatedTokenAccountInstruction(
-          sender,
-          recipientTokenAccount,
-          recipient,
-          USDC_MINT
-        )
-      );
-    }
-    tx.add(
-      createTransferInstruction(
-        senderTokenAccount,
-        recipientTokenAccount,
-        sender,
-        payoutAmount * 10 ** 6
-      )
-    );
-    tx.feePayer = sender;
-    tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+        if (recordError) {
+          logger.error("Failed to persist plan break records", {
+            module: "plans/break",
+            planId: plan_id,
+            payoutTx: result.payoutTx,
+          }, recordError);
+        }
 
-    // 9. Sign and send the transaction
-    const signature = await connection.sendTransaction(tx, [payoutKeypair]);
+        recordAuditLog({ userId: user.id, eventType: "plan_break", request });
 
-    let status = await getTransactionStatus(signature);
-    let attempts = 0;
-    const maxAttempts = 3;
-    const delay = 20000; // 20 seconds
-
-    while (status !== "finalized" && attempts < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      status = await getTransactionStatus(signature);
-      console.log(
-        `Rechecked status for break transaction ${signature}: ${status}`
-      );
-      attempts++;
-    }
-
-    if (status !== "finalized") {
-      console.error(
-        `Break transaction ${signature} for plan ${plan_id} did not finalize. Status: ${status}`
-      );
-      // Optionally, you might want to revert the balance reset here if possible
-      return NextResponse.json(
-        {
-          error: "Transaction did not finalize",
-          details: `Transaction status: ${status}`,
-        },
-        { status: 500, headers: corsHeaders }
-      );
-    }
-
-    // Idempotency: claim this break's signature upfront. Requires unique constraint on processed_transactions.signature
-    const { error: claimError } = await supabase
-      .from("processed_transactions")
-      .insert({ signature });
-    if (claimError) {
-      if ((claimError as any).code === "23505") {
-        console.log(
-          `Break transaction ${signature} already claimed. Skipping.`
-        );
         return NextResponse.json(
-          { success: true, signature, message: "Break already processed" },
+          {
+            success: true,
+            payoutTx: result.payoutTx,
+            feeTx: result.feeTx,
+            signature: result.payoutTx,
+            totalBalance: liveOnChainBalance,
+            payoutAmount: result.payoutAmount,
+            feeAmount: result.feeAmount,
+            chain,
+            token: tokenSymbol,
+          },
           { headers: corsHeaders }
         );
       }
-      console.error(
-        `Failed to claim break transaction ${signature}:`,
-        claimError
-      );
-      return NextResponse.json(
-        {
-          error: "Internal server error",
-          details: "Failed to claim break transaction",
-        },
-        { status: 500, headers: corsHeaders }
-      );
-    }
-
-    // 10. Log the transactions
-    try {
-      await logTransaction({
-        wallet_id: walletId,
-        type: "debit",
-        amount: payoutAmount,
-        currency: "USDC",
-        description: `Plan broken. Payout to ${recipientAddress}`,
-        solana_signature: signature,
-      });
-
-      await logTransaction({
-        wallet_id: walletId,
-        type: "debit",
-        amount: parseFloat(feeAmount.toFixed(3)),
-        currency: "USDC",
-        description: "Plan breakage fee",
-        solana_signature: signature,
-      });
-    } catch (e) {
-      console.error(
-        `Failed to log break transactions for wallet ${walletId}:`,
-        e
-      );
-    }
-
-    return NextResponse.json(
-      { success: true, signature },
-      { headers: corsHeaders }
     );
   } catch (err) {
-    if (err instanceof SendTransactionError) {
-      const connection = new Connection(SOLANA_RPC);
-      err.getLogs(connection).then((logs) => {
-        console.error("Transaction failed logs:", logs);
-      });
-    }
-    const errorMessage =
-      err instanceof Error ? err.message : "An unknown error occurred";
-    console.error(err);
+    const errorObj = err instanceof Error ? err : new Error(String(err));
+    logger.error("Error breaking plan", { module: "plans/break" }, errorObj);
+
     return NextResponse.json(
-      { error: errorMessage },
+      { error: errorObj.message },
       { status: 500, headers: corsHeaders }
     );
   }

@@ -1,0 +1,29 @@
+# Anti-slop Provenance
+
+- **Source repository:** https://github.com/dmmulroy/anti-slop
+- **Skill installer:** `install-anti-slop` via `npx skills add dmmulroy/anti-slop --skill install-anti-slop`
+- **Vendored destination:** `tools/oxlint/anti-slop/`
+- **Oxlint version:** `1.86.0` (pinned)
+- **@oxlint/plugins version:** `1.86.0` (pinned)
+- **Registered configuration:** `oxlint.config.ts`
+- **Active generic rules:**
+  - `oxc/no-accumulating-spread`: error
+  - `anti-slop/no-array-filter-map`: error
+  - `anti-slop/no-reduce-accumulator-copy`: error
+  - `anti-slop/no-chained-type-assertions`: error
+  - `anti-slop/no-conditional-empty-object-spread`: error
+  - `anti-slop/no-known-value-widening`: error
+  - `anti-slop/no-module-mocking`: error
+  - `anti-slop/no-object-parameters`: error
+  - `anti-slop/no-reflect-apply`: error
+  - `anti-slop/no-reflect-get`: error
+  - `anti-slop/no-runtime-typeof`: error (with `allowInTypeGuards: true`)
+  - `anti-slop/no-shape-in-symbol-names`: error
+  - `anti-slop/no-unknown-parameters`: error
+  - `anti-slop/no-unknown-returns`: error
+  - `anti-slop/no-unknown-type-aliases`: error
+  - `anti-slop/no-unsafe-dictionary-type`: error
+  - `anti-slop/no-widen-then-assert`: error
+  - `anti-slop/require-readable-spacing`: error
+  - `anti-slop/require-safety-comment-for-type-assertion`: error
+- **Intentional deviations:** None. Generic rules enabled without Effect plugin (project does not use Effect).
