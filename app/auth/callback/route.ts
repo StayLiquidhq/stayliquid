@@ -13,9 +13,11 @@ export async function GET(request: NextRequest) {
         const response = NextResponse.redirect(`${origin}/auth/auth-code-error`)
         const supabase = createSupabaseServerClient(request, response)
 
-        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+        const { data: sessionData, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
 
         if (exchangeError) throw exchangeError
+
+        if (!sessionData.session?.access_token) throw new Error('Missing Supabase access token')
 
         const { data: { user }, error: userError } = await supabase.auth.getUser()
 
@@ -23,12 +25,13 @@ export async function GET(request: NextRequest) {
 
         const userResponse = await fetch(`${origin}/api/user/create`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${sessionData.session.access_token}`,
+            },
             body: JSON.stringify({
-                email: user.user_metadata.email,
                 name: user.user_metadata.full_name,
                 picture: user.user_metadata.picture || null,
-                google_id: user.id
             })
         })
 

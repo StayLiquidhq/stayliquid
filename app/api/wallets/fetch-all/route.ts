@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
 import { handleCorsPreflight, getCorsHeaders } from "@/lib/cors";
-import { requireEnv } from "@/lib/env";
+import { enforceRateLimit } from "@/lib/rate-limit";
+import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
 
 export async function OPTIONS(request: NextRequest) {
   return handleCorsPreflight(request);
@@ -12,10 +13,17 @@ export async function GET(request: NextRequest) {
   const corsHeaders = getCorsHeaders(origin);
 
   try {
-    const authHeader = request.headers.get("x-custom-auth");
+    const rateLimited = await enforceRateLimit(request, {
+      scope: "wallets-fetch-all",
+      limit: 60,
+      windowSeconds: 60,
+      headers: corsHeaders,
+    });
 
-    if (authHeader !== requireEnv("PAYOUT_AUTH_TOKEN")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
+    if (rateLimited) return rateLimited;
+
+    if (!verifyServiceBearerToken(request, "WALLET_LIST_AUTH_TOKEN")) {
+      return unauthorizedServiceResponse("wallets/fetch-all", corsHeaders);
     }
 
     const { data: wallets, error: walletsError } = await supabase

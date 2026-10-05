@@ -7,7 +7,15 @@ import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { withIdempotency } from "@/lib/idempotency";
 import { recordAuditLog } from "@/lib/audit";
 import { logger } from "@/lib/logger";
-import { requireEnv } from "@/lib/env";
+import { enforceRateLimit } from "@/lib/rate-limit";
+import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
+import {
+  completeTransferRecoveryJob,
+  failTransferRecoveryJob,
+  getTransferRecoveryJob,
+  markTransferRecoveryExternalSucceeded,
+  prepareTransferRecoveryJob,
+} from "@/lib/recovery";
 
 interface PlanRecord {
   id: string;
@@ -29,16 +37,17 @@ export async function POST(request: NextRequest) {
   const corsHeaders = getCorsHeaders(origin);
 
   try {
-    const authHeader = request.headers.get("authorization");
-    const authToken = requireEnv("PAYOUT_AUTH_TOKEN");
+    const rateLimited = await enforceRateLimit(request, {
+      scope: "plans-payout-target",
+      limit: 30,
+      windowSeconds: 60,
+      headers: corsHeaders,
+    });
 
-    if (!authToken || authHeader !== `Bearer ${authToken}`) {
-      logger.warn("Unauthorized target payout trigger attempt", { module: "plans/payout-target" });
+    if (rateLimited) return rateLimited;
 
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401, headers: corsHeaders }
-      );
+    if (!verifyServiceBearerToken(request, "TARGET_PAYOUT_AUTH_TOKEN")) {
+      return unauthorizedServiceResponse("plans/payout-target", corsHeaders);
     }
 
     const body = await request.json().catch(() => ({}));
@@ -118,11 +127,26 @@ export async function POST(request: NextRequest) {
 
     const chain = parseChainWithFallback(plan.chain, parseChainWithFallback(wallet.chain_type));
     const tokenSymbol = parseTokenWithFallback(plan.token);
+    const idempotencyKey = `payout-target:${plan_id}`;
+    const recoveryScope = "plans/payout-target";
 
     return await withIdempotency(
       request,
-      { scope: "plans/payout-target", key: `payout-target:${plan_id}` },
+      { scope: recoveryScope, key: idempotencyKey },
       async () => {
+        const existingRecovery = await getTransferRecoveryJob(recoveryScope, idempotencyKey);
+
+        if (existingRecovery?.status === "completed" && existingRecovery.response) {
+          return NextResponse.json(existingRecovery.response, { headers: corsHeaders });
+        }
+
+        if (existingRecovery && existingRecovery.status !== "failed") {
+          return NextResponse.json(
+            { success: false, status: existingRecovery.status, recoveryPending: true, error: existingRecovery.last_error },
+            { status: 202, headers: corsHeaders }
+          );
+        }
+
         const liveOnChainBalance = await getOnChainTokenBalance({
           address: wallet.address,
           chain,
@@ -144,6 +168,24 @@ export async function POST(request: NextRequest) {
           );
         }
 
+        const recoveryRequest = {
+          amount: liveOnChainBalance,
+          recipient: recipientAddress,
+          is_solana: chain === "solana",
+        };
+
+        await prepareTransferRecoveryJob({
+          scope: recoveryScope,
+          key: idempotencyKey,
+          operationType: "target_payout",
+          userId: plan.user_id,
+          planId: plan_id,
+          walletId: wallet.id,
+          chain,
+          token: tokenSymbol,
+          request: recoveryRequest,
+        });
+
         logger.info("Executing target payout directly from user Coinbase wallet", {
           module: "plans/payout-target",
           planId: plan_id,
@@ -154,13 +196,26 @@ export async function POST(request: NextRequest) {
           token: tokenSymbol,
         });
 
-        const { tx } = await executeDirectTransfer({
-          senderWalletAddress: wallet.address,
-          recipientAddress,
-          amount: liveOnChainBalance,
-          chain,
-          token: tokenSymbol,
-        });
+        let tx: string;
+
+        try {
+          const result = await executeDirectTransfer({
+            senderWalletAddress: wallet.address,
+            recipientAddress,
+            amount: liveOnChainBalance,
+            chain,
+            token: tokenSymbol,
+            idempotencyKey,
+          });
+
+          tx = result.tx;
+        } catch (error) {
+          const errorObj = error instanceof Error ? error : new Error(String(error));
+          await failTransferRecoveryJob(recoveryScope, idempotencyKey, errorObj.message);
+          throw errorObj;
+        }
+
+        await markTransferRecoveryExternalSucceeded(recoveryScope, idempotencyKey, { tx });
 
         const { error: recordError } = await supabase.rpc("record_target_payout", {
           p_plan_id: plan_id,
@@ -172,27 +227,33 @@ export async function POST(request: NextRequest) {
           p_is_solana: chain === "solana",
         });
 
+        const responseBody = {
+          success: true,
+          signature: tx,
+          txHash: tx,
+          payoutAmount: liveOnChainBalance,
+          chain,
+          token: tokenSymbol,
+        };
+
         if (recordError) {
           logger.error("Failed to persist target payout records", {
             module: "plans/payout-target",
             planId: plan_id,
             tx,
           }, recordError);
+
+          return NextResponse.json(
+            { ...responseBody, recoveryPending: true, message: "Transfer broadcasted; database recovery is queued." },
+            { status: 202, headers: corsHeaders }
+          );
         }
+
+        await completeTransferRecoveryJob(recoveryScope, idempotencyKey, responseBody);
 
         recordAuditLog({ userId: plan.user_id, eventType: "payout", request });
 
-        return NextResponse.json(
-          {
-            success: true,
-            signature: tx,
-            txHash: tx,
-            payoutAmount: liveOnChainBalance,
-            chain,
-            token: tokenSymbol,
-          },
-          { headers: corsHeaders }
-        );
+        return NextResponse.json(responseBody, { headers: corsHeaders });
       }
     );
   } catch (err) {
@@ -200,7 +261,7 @@ export async function POST(request: NextRequest) {
     logger.error("Target payout execution failed", { module: "plans/payout-target" }, errorObj);
 
     return NextResponse.json(
-      { error: errorObj.message },
+      { error: "Target payout execution failed" },
       { status: 500, headers: corsHeaders }
     );
   }

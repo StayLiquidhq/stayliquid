@@ -6,6 +6,9 @@ import { isSupportedChain, isSupportedToken, SupportedChain, SupportedToken } fr
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { logger } from "@/lib/logger";
 import { requireEnv } from "@/lib/env";
+import { enforceRateLimit } from "@/lib/rate-limit";
+import { verifySignedWebhook } from "@/lib/webhook-security";
+import { verifyDepositTransaction } from "@/lib/deposit-verification";
 
 import { z } from "zod";
 
@@ -35,19 +38,36 @@ export async function POST(request: NextRequest) {
 
   try {
     const webhookSecret = requireEnv("CDP_WEBHOOK_SECRET");
+    const rawBody = await request.text();
 
-    const authHeader = request.headers.get("authorization") || request.headers.get("x-webhook-secret");
+    const rateLimited = await enforceRateLimit(request, {
+      scope: "wallets-update-balance",
+      limit: 120,
+      windowSeconds: 60,
+      headers: corsHeaders,
+    });
 
-    if (authHeader !== `Bearer ${webhookSecret}` && authHeader !== webhookSecret) {
-      logger.warn("Unauthorized webhook request attempt", { module: "webhook/deposit" });
+    if (rateLimited) return rateLimited;
+
+    if (!verifySignedWebhook(request, rawBody, webhookSecret)) {
+      logger.warn("Invalid CDP webhook signature", { module: "webhook/deposit" });
 
       return NextResponse.json(
-        { error: "Unauthorized webhook request" },
+        { error: "Invalid webhook signature" },
         { status: 401, headers: corsHeaders }
       );
     }
 
-    const body = await request.json().catch(() => null);
+    let body = null;
+
+    try {
+      body = rawBody ? JSON.parse(rawBody) : null;
+    } catch {
+      return NextResponse.json(
+        { message: "Invalid JSON payload" },
+        { status: 400, headers: corsHeaders }
+      );
+    }
 
     if (!body) {
       return NextResponse.json(
@@ -61,7 +81,7 @@ export async function POST(request: NextRequest) {
     if (!parseResult.success) {
       return NextResponse.json(
         { message: "Invalid payload format" },
-        { status: 200, headers: corsHeaders }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -115,6 +135,26 @@ export async function POST(request: NextRequest) {
       const rawToken = item.symbol || item.token || "USDC";
       const token: SupportedToken = isSupportedToken(rawToken) ? rawToken : "USDC";
       const depositAmount = item.amount ? Number(item.amount) : 0;
+
+      const isVerifiedDeposit = await verifyDepositTransaction({
+        txId,
+        walletAddress,
+        chain,
+        token,
+        amount: depositAmount,
+      });
+
+      if (!isVerifiedDeposit) {
+        logger.warn("Deposit webhook transaction did not match on-chain facts. Releasing claim.", {
+          module: "webhook/deposit",
+          txId,
+          walletAddress,
+          chain,
+          token,
+        });
+        await supabase.from("processed_transactions").delete().eq("signature", txId);
+        continue;
+      }
 
       await logTransaction({
         wallet_id: wallet.id,

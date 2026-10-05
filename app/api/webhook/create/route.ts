@@ -1,20 +1,43 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
 import { logger } from "@/lib/logger";
+import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
+import { enforceRateLimit } from "@/lib/rate-limit";
+import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
 
-export async function POST() {
+export async function OPTIONS(request: NextRequest) {
+  return handleCorsPreflight(request);
+}
+
+export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
   try {
+    const rateLimited = await enforceRateLimit(request, {
+      scope: "webhook-admin-create",
+      limit: 10,
+      windowSeconds: 60,
+      headers: corsHeaders,
+    });
+
+    if (rateLimited) return rateLimited;
+
+    if (!verifyServiceBearerToken(request, "WEBHOOK_ADMIN_AUTH_TOKEN")) {
+      return unauthorizedServiceResponse("webhook/create", corsHeaders);
+    }
+
     const { data: wallets, error: walletsError } = await supabase
       .from("wallets")
       .select("id, address")
       .eq("has_webhook", false);
 
     if (walletsError) {
-      return NextResponse.json({ error: "Failed to fetch wallets" }, { status: 500 });
+      return NextResponse.json({ error: "Failed to fetch wallets" }, { status: 500, headers: corsHeaders });
     }
 
     if (!wallets || wallets.length === 0) {
-      return NextResponse.json({ message: "All wallets are active under CDP monitoring" }, { status: 200 });
+      return NextResponse.json({ message: "All wallets are active under CDP monitoring" }, { status: 200, headers: corsHeaders });
     }
 
     const walletIds = wallets.map((w) => w.id);
@@ -39,12 +62,12 @@ export async function POST() {
         message: "Wallets registered under CDP project-level webhook monitoring.",
         count: walletIds.length,
       },
-      { status: 200 }
+      { status: 200, headers: corsHeaders }
     );
   } catch (err) {
     const errorObj = err instanceof Error ? err : new Error(String(err));
     logger.error("Error synchronizing CDP webhook status", { module: "webhook/create" }, errorObj);
 
-    return NextResponse.json({ error: errorObj.message }, { status: 500 });
+    return NextResponse.json({ error: "Webhook status synchronization failed" }, { status: 500, headers: corsHeaders });
   }
 }

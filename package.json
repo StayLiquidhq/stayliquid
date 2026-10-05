@@ -17,25 +17,26 @@
     "@solana/web3.js": "^1.99.0",
     "@supabase/ssr": "^0.6.1",
     "@supabase/supabase-js": "^2.52.0",
+    "@upstash/redis": "^1.39.0",
     "bs58": "^6.0.0",
-    "crypto": "^1.0.1",
     "next": "^16.3.8",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "^3",
     "@oxlint/plugins": "1.86.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "^16.3.8",
     "oxlint": "1.86.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5"
+  },
+  "overrides": {
+    "stream-json": "3.7.0",
+    "uuid": "11.1.1"
   }
 }

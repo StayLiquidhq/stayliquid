@@ -6,8 +6,16 @@ import { parseChainWithFallback, parseTokenWithFallback } from "@/lib/tokens";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { withIdempotency } from "@/lib/idempotency";
 import { logger } from "@/lib/logger";
-import { requireEnv } from "@/lib/env";
 import { getPlatformFeesWallet } from "@/lib/treasury";
+import { enforceRateLimit } from "@/lib/rate-limit";
+import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
+import {
+  completeTransferRecoveryJob,
+  failTransferRecoveryJob,
+  getTransferRecoveryJob,
+  markTransferRecoveryExternalSucceeded,
+  prepareTransferRecoveryJob,
+} from "@/lib/recovery";
 
 export async function OPTIONS(request: NextRequest) {
   return handleCorsPreflight(request);
@@ -27,16 +35,17 @@ export async function POST(request: NextRequest) {
   const corsHeaders = getCorsHeaders(origin);
 
   try {
-    const authHeader = request.headers.get("authorization");
-    const authToken = requireEnv("PAYOUT_AUTH_TOKEN");
+    const rateLimited = await enforceRateLimit(request, {
+      scope: "plans-fiat-payout-webhook",
+      limit: 60,
+      windowSeconds: 60,
+      headers: corsHeaders,
+    });
 
-    if (!authToken || authHeader !== `Bearer ${authToken}`) {
-      logger.warn("Unauthorized fiat webhook request", { module: "plans/fiat-webhook" });
+    if (rateLimited) return rateLimited;
 
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401, headers: corsHeaders }
-      );
+    if (!verifyServiceBearerToken(request, "FIAT_PAYOUT_WEBHOOK_AUTH_TOKEN")) {
+      return unauthorizedServiceResponse("plans/fiat-webhook", corsHeaders);
     }
 
     const body = await request.json().catch(() => ({}));
@@ -62,6 +71,21 @@ export async function POST(request: NextRequest) {
       request,
       { scope: "plans/fiat-webhook", key: `fiat-payout:${fiat_transaction_id}` },
       async () => {
+        const recoveryScope = "plans/fiat-webhook";
+        const idempotencyKey = `fiat-payout:${fiat_transaction_id}`;
+        const existingRecovery = await getTransferRecoveryJob(recoveryScope, idempotencyKey);
+
+        if (existingRecovery?.status === "completed" && existingRecovery.response) {
+          return NextResponse.json(existingRecovery.response, { headers: corsHeaders });
+        }
+
+        if (existingRecovery && existingRecovery.status !== "failed") {
+          return NextResponse.json(
+            { success: false, status: existingRecovery.status, recoveryPending: true, error: existingRecovery.last_error },
+            { status: 202, headers: corsHeaders }
+          );
+        }
+
         const { data: plan, error: planError } = await supabase
           .from("plans")
           .select("plan_type, frequency, chain, token")
@@ -84,6 +108,23 @@ export async function POST(request: NextRequest) {
         const tokenSymbol = parseTokenWithFallback(plan.token);
 
         const treasury = getPlatformFeesWallet(chain);
+
+        await prepareTransferRecoveryJob({
+          scope: recoveryScope,
+          key: idempotencyKey,
+          operationType: "fiat_payout",
+          planId: plan_id,
+          walletId: wallet_id,
+          chain,
+          token: tokenSymbol,
+          request: {
+            amount,
+            description,
+            fiat_transaction_id,
+            is_solana: chain === "solana",
+          },
+        });
+
         logger.info("Transferring settlement tokens for fiat payout", {
           module: "plans/fiat-webhook",
           planId: plan_id,
@@ -94,13 +135,26 @@ export async function POST(request: NextRequest) {
           token: tokenSymbol,
         });
 
-        const { tx } = await executeDirectTransfer({
-          senderWalletAddress: user_wallet_address,
-          recipientAddress: treasury,
-          amount,
-          chain,
-          token: tokenSymbol,
-        });
+        let tx: string;
+
+        try {
+          const result = await executeDirectTransfer({
+            senderWalletAddress: user_wallet_address,
+            recipientAddress: treasury,
+            amount,
+            chain,
+            token: tokenSymbol,
+            idempotencyKey,
+          });
+
+          tx = result.tx;
+        } catch (error) {
+          const errorObj = error instanceof Error ? error : new Error(String(error));
+          await failTransferRecoveryJob(recoveryScope, idempotencyKey, errorObj.message);
+          throw errorObj;
+        }
+
+        await markTransferRecoveryExternalSucceeded(recoveryScope, idempotencyKey, { tx });
 
         const { error: recordError } = await supabase.rpc("record_fiat_payout", {
           p_plan_id: plan_id,
@@ -113,18 +167,28 @@ export async function POST(request: NextRequest) {
           p_is_solana: chain === "solana",
         });
 
+        const responseBody = {
+          success: true,
+          signature: tx,
+          message: "Fiat payout settled and processed successfully.",
+        };
+
         if (recordError) {
           logger.error("Failed to persist fiat payout records", {
             module: "plans/fiat-webhook",
             planId: plan_id,
             fiatTransactionId: fiat_transaction_id,
           }, recordError);
+
+          return NextResponse.json(
+            { ...responseBody, recoveryPending: true, message: "Transfer broadcasted; database recovery is queued." },
+            { status: 202, headers: corsHeaders }
+          );
         }
 
-        return NextResponse.json(
-          { success: true, signature: tx, message: "Fiat payout settled and processed successfully." },
-          { headers: corsHeaders }
-        );
+        await completeTransferRecoveryJob(recoveryScope, idempotencyKey, responseBody);
+
+        return NextResponse.json(responseBody, { headers: corsHeaders });
       }
     );
   } catch (err) {
@@ -132,7 +196,7 @@ export async function POST(request: NextRequest) {
     logger.error("Fiat payout webhook error", { module: "plans/fiat-webhook" }, errorObj);
 
     return NextResponse.json(
-      { error: errorObj.message },
+      { error: "Fiat payout webhook processing failed" },
       { status: 500, headers: corsHeaders }
     );
   }

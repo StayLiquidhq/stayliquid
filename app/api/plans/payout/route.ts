@@ -6,7 +6,15 @@ import { parseChainWithFallback, parseTokenWithFallback } from "@/lib/tokens";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { withIdempotency } from "@/lib/idempotency";
 import { logger } from "@/lib/logger";
-import { requireEnv } from "@/lib/env";
+import { enforceRateLimit } from "@/lib/rate-limit";
+import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
+import {
+  completeTransferRecoveryJob,
+  failTransferRecoveryJob,
+  getTransferRecoveryJob,
+  markTransferRecoveryExternalSucceeded,
+  prepareTransferRecoveryJob,
+} from "@/lib/recovery";
 
 interface PlanRecord {
   id: string;
@@ -30,16 +38,17 @@ export async function POST(request: NextRequest) {
   const corsHeaders = getCorsHeaders(origin);
 
   try {
-    const authHeader = request.headers.get("authorization");
-    const authToken = requireEnv("PAYOUT_AUTH_TOKEN");
+    const rateLimited = await enforceRateLimit(request, {
+      scope: "plans-payout",
+      limit: 30,
+      windowSeconds: 60,
+      headers: corsHeaders,
+    });
 
-    if (!authToken || authHeader !== `Bearer ${authToken}`) {
-      logger.warn("Unauthorized payout trigger attempt", { module: "plans/payout" });
+    if (rateLimited) return rateLimited;
 
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401, headers: corsHeaders }
-      );
+    if (!verifyServiceBearerToken(request, "PAYOUT_RUNNER_AUTH_TOKEN")) {
+      return unauthorizedServiceResponse("plans/payout", corsHeaders);
     }
 
     const body = await request.json().catch(() => ({}));
@@ -132,11 +141,25 @@ export async function POST(request: NextRequest) {
 
     const payoutSlot = plan.next_payout_date ?? new Date().toISOString().slice(0, 10);
     const idempotencyKey = `payout:${plan_id}:${payoutSlot}`;
+    const recoveryScope = "plans/payout";
 
     return await withIdempotency(
       request,
-      { scope: "plans/payout", key: idempotencyKey },
+      { scope: recoveryScope, key: idempotencyKey },
       async () => {
+        const existingRecovery = await getTransferRecoveryJob(recoveryScope, idempotencyKey);
+
+        if (existingRecovery?.status === "completed" && existingRecovery.response) {
+          return NextResponse.json(existingRecovery.response, { headers: corsHeaders });
+        }
+
+        if (existingRecovery && existingRecovery.status !== "failed") {
+          return NextResponse.json(
+            { success: false, status: existingRecovery.status, recoveryPending: true, error: existingRecovery.last_error },
+            { status: 202, headers: corsHeaders }
+          );
+        }
+
         const liveOnChainBalance = await getOnChainTokenBalance({
           address: wallet.address,
           chain,
@@ -163,24 +186,6 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        logger.info("Executing recurring payout directly from user Coinbase wallet", {
-          module: "plans/payout",
-          planId: plan_id,
-          senderWalletAddress: wallet.address,
-          recipientAddress,
-          payoutAmount,
-          chain,
-          token: tokenSymbol,
-        });
-
-        const { tx } = await executeDirectTransfer({
-          senderWalletAddress: wallet.address,
-          recipientAddress,
-          amount: payoutAmount,
-          chain,
-          token: tokenSymbol,
-        });
-
         const now = new Date();
         let next_payout_date: Date | null = new Date(now);
 
@@ -199,6 +204,58 @@ export async function POST(request: NextRequest) {
             break;
         }
 
+        const nextPayoutDateIso = next_payout_date ? next_payout_date.toISOString() : null;
+
+        const recoveryRequest = {
+          amount: payoutAmount,
+          recipient: recipientAddress,
+          last_payout_date: now.toISOString(),
+          next_payout_date: nextPayoutDateIso,
+          is_solana: chain === "solana",
+        };
+
+        await prepareTransferRecoveryJob({
+          scope: recoveryScope,
+          key: idempotencyKey,
+          operationType: "recurring_payout",
+          planId: plan_id,
+          walletId: wallet.id,
+          chain,
+          token: tokenSymbol,
+          request: recoveryRequest,
+        });
+
+        logger.info("Executing recurring payout directly from user Coinbase wallet", {
+          module: "plans/payout",
+          planId: plan_id,
+          senderWalletAddress: wallet.address,
+          recipientAddress,
+          payoutAmount,
+          chain,
+          token: tokenSymbol,
+        });
+
+        let tx: string;
+
+        try {
+          const result = await executeDirectTransfer({
+            senderWalletAddress: wallet.address,
+            recipientAddress,
+            amount: payoutAmount,
+            chain,
+            token: tokenSymbol,
+            idempotencyKey,
+          });
+
+          tx = result.tx;
+        } catch (error) {
+          const errorObj = error instanceof Error ? error : new Error(String(error));
+          await failTransferRecoveryJob(recoveryScope, idempotencyKey, errorObj.message);
+          throw errorObj;
+        }
+
+        await markTransferRecoveryExternalSucceeded(recoveryScope, idempotencyKey, { tx });
+
         const { error: recordError } = await supabase.rpc("record_recurring_payout", {
           p_plan_id: plan_id,
           p_wallet_id: wallet.id,
@@ -207,9 +264,19 @@ export async function POST(request: NextRequest) {
           p_currency: tokenSymbol,
           p_recipient: recipientAddress,
           p_last_payout_date: now.toISOString(),
-          p_next_payout_date: next_payout_date ? next_payout_date.toISOString() : null,
+          p_next_payout_date: nextPayoutDateIso,
           p_is_solana: chain === "solana",
         });
+
+        const responseBody = {
+          success: true,
+          signature: tx,
+          txHash: tx,
+          payoutAmount,
+          chain,
+          token: tokenSymbol,
+          next_payout_date: nextPayoutDateIso,
+        };
 
         if (recordError) {
           logger.error("Failed to persist recurring payout records", {
@@ -217,20 +284,16 @@ export async function POST(request: NextRequest) {
             planId: plan_id,
             tx,
           }, recordError);
+
+          return NextResponse.json(
+            { ...responseBody, recoveryPending: true, message: "Transfer broadcasted; database recovery is queued." },
+            { status: 202, headers: corsHeaders }
+          );
         }
 
-        return NextResponse.json(
-          {
-            success: true,
-            signature: tx,
-            txHash: tx,
-            payoutAmount,
-            chain,
-            token: tokenSymbol,
-            next_payout_date: next_payout_date?.toISOString(),
-          },
-          { headers: corsHeaders }
-        );
+        await completeTransferRecoveryJob(recoveryScope, idempotencyKey, responseBody);
+
+        return NextResponse.json(responseBody, { headers: corsHeaders });
       }
     );
   } catch (err) {
@@ -238,7 +301,7 @@ export async function POST(request: NextRequest) {
     logger.error("Payout endpoint execution failed", { module: "plans/payout" }, errorObj);
 
     return NextResponse.json(
-      { error: errorObj.message },
+      { error: "Payout execution failed" },
       { status: 500, headers: corsHeaders }
     );
   }

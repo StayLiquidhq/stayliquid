@@ -9,6 +9,14 @@ import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { withIdempotency } from "@/lib/idempotency";
 import { recordAuditLog } from "@/lib/audit";
 import { logger } from "@/lib/logger";
+import { enforceRateLimit } from "@/lib/rate-limit";
+import {
+  completeTransferRecoveryJob,
+  failTransferRecoveryJob,
+  getTransferRecoveryJob,
+  markTransferRecoveryExternalSucceeded,
+  prepareTransferRecoveryJob,
+} from "@/lib/recovery";
 
 interface PlanRecord {
   id: string;
@@ -55,6 +63,16 @@ export async function POST(request: NextRequest) {
         { status: 401, headers: corsHeaders }
       );
     }
+
+    const rateLimited = await enforceRateLimit(request, {
+      scope: "plans-break",
+      identity: user.id,
+      limit: 10,
+      windowSeconds: 60,
+      headers: corsHeaders,
+    });
+
+    if (rateLimited) return rateLimited;
 
     const body = await request.json().catch(() => null);
     const parsed = BreakRequestSchema.safeParse(body);
@@ -120,11 +138,26 @@ export async function POST(request: NextRequest) {
 
     const chain = parseChainWithFallback(plan.chain, parseChainWithFallback(wallet.chain_type));
     const tokenSymbol = parseTokenWithFallback(plan.token);
+    const idempotencyKey = request.headers.get("idempotency-key") ?? `break:${user.id}:${plan_id}`;
+    const recoveryScope = "plans/break";
 
     return await withIdempotency(
       request,
-      { scope: "plans/break", userId: user.id, payload: { plan_id } },
+      { scope: recoveryScope, key: idempotencyKey, userId: user.id, payload: { plan_id } },
       async () => {
+        const existingRecovery = await getTransferRecoveryJob(recoveryScope, idempotencyKey);
+
+        if (existingRecovery?.status === "completed" && existingRecovery.response) {
+          return NextResponse.json(existingRecovery.response, { headers: corsHeaders });
+        }
+
+        if (existingRecovery && existingRecovery.status !== "failed") {
+          return NextResponse.json(
+            { success: false, status: existingRecovery.status, recoveryPending: true, error: existingRecovery.last_error },
+            { status: 202, headers: corsHeaders }
+          );
+        }
+
         const liveOnChainBalance = await getOnChainTokenBalance({
           address: wallet.address,
           chain,
@@ -148,14 +181,46 @@ export async function POST(request: NextRequest) {
 
         const feeTreasury = getPlatformFeesWallet(chain);
 
-        const result = await executeSplitPayout({
-          senderWalletAddress: wallet.address,
-          recipientAddress,
-          feeTreasuryAddress: feeTreasury,
-          totalAmount: liveOnChainBalance,
-          feePercent: 0.05,
+        await prepareTransferRecoveryJob({
+          scope: recoveryScope,
+          key: idempotencyKey,
+          operationType: "plan_break",
+          userId: user.id,
+          planId: plan_id,
+          walletId: wallet.id,
           chain,
           token: tokenSymbol,
+          request: {
+            total_balance: liveOnChainBalance,
+            recipient: recipientAddress,
+            is_solana: chain === "solana",
+          },
+        });
+
+        let result: Awaited<ReturnType<typeof executeSplitPayout>>;
+
+        try {
+          result = await executeSplitPayout({
+            senderWalletAddress: wallet.address,
+            recipientAddress,
+            feeTreasuryAddress: feeTreasury,
+            totalAmount: liveOnChainBalance,
+            feePercent: 0.05,
+            chain,
+            token: tokenSymbol,
+            idempotencyKey,
+          });
+        } catch (error) {
+          const errorObj = error instanceof Error ? error : new Error(String(error));
+          await failTransferRecoveryJob(recoveryScope, idempotencyKey, errorObj.message);
+          throw errorObj;
+        }
+
+        await markTransferRecoveryExternalSucceeded(recoveryScope, idempotencyKey, {
+          payoutTx: result.payoutTx,
+          feeTx: result.feeTx,
+          payoutAmount: result.payoutAmount,
+          feeAmount: result.feeAmount,
         });
 
         const { error: recordError } = await supabase.rpc("record_plan_break", {
@@ -170,30 +235,36 @@ export async function POST(request: NextRequest) {
           p_recipient: recipientAddress,
         });
 
+        const responseBody = {
+          success: true,
+          payoutTx: result.payoutTx,
+          feeTx: result.feeTx,
+          signature: result.payoutTx,
+          totalBalance: liveOnChainBalance,
+          payoutAmount: result.payoutAmount,
+          feeAmount: result.feeAmount,
+          chain,
+          token: tokenSymbol,
+        };
+
         if (recordError) {
           logger.error("Failed to persist plan break records", {
             module: "plans/break",
             planId: plan_id,
             payoutTx: result.payoutTx,
           }, recordError);
+
+          return NextResponse.json(
+            { ...responseBody, recoveryPending: true, message: "Transfer broadcasted; database recovery is queued." },
+            { status: 202, headers: corsHeaders }
+          );
         }
+
+        await completeTransferRecoveryJob(recoveryScope, idempotencyKey, responseBody);
 
         recordAuditLog({ userId: user.id, eventType: "plan_break", request });
 
-        return NextResponse.json(
-          {
-            success: true,
-            payoutTx: result.payoutTx,
-            feeTx: result.feeTx,
-            signature: result.payoutTx,
-            totalBalance: liveOnChainBalance,
-            payoutAmount: result.payoutAmount,
-            feeAmount: result.feeAmount,
-            chain,
-            token: tokenSymbol,
-          },
-          { headers: corsHeaders }
-        );
+        return NextResponse.json(responseBody, { headers: corsHeaders });
       }
     );
   } catch (err) {
@@ -201,7 +272,7 @@ export async function POST(request: NextRequest) {
     logger.error("Error breaking plan", { module: "plans/break" }, errorObj);
 
     return NextResponse.json(
-      { error: errorObj.message },
+      { error: "Plan break failed" },
       { status: 500, headers: corsHeaders }
     );
   }

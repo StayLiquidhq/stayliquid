@@ -15,7 +15,14 @@ Next.js Route Handlers
         |-- CORS
         |-- Supabase Auth JWT checks
         |-- Zod validation
-        |-- Idempotency wrapper for money flows
+        |-- Redis idempotency wrapper for money flows
+        |-- Redis rate limiting
+        |
+        v
+Redis
+        |
+        |-- idempotency claims/replays
+        |-- route throttle counters
         |
         v
 Supabase Postgres
@@ -25,7 +32,6 @@ Supabase Postgres
         |-- wallets
         |-- transactions
         |-- processed_transactions
-        |-- idempotency_keys
         |-- audit_logs
         |
         v
@@ -37,7 +43,7 @@ External money infrastructure
         |-- CDP deposit webhooks
 ```
 
-Core principle: balances are not trusted from the database. Wallet balances are queried live from Base/Solana before display or payout. Supabase stores metadata, immutable ledger rows, audit rows, and idempotency state.
+Core principle: balances are not trusted from the database. Wallet balances are queried live from Base/Solana before display or payout. Redis stores hot-path idempotency/rate-limit state. Supabase stores durable metadata, immutable ledger rows, audit rows, and recovery jobs.
 
 ## Stack
 
@@ -47,6 +53,7 @@ Core principle: balances are not trusted from the database. Wallet balances are 
 | Runtime | Node.js route handlers |
 | Auth | Supabase Auth |
 | Database | Supabase Postgres |
+| Hot-path state | Redis via Upstash REST |
 | Wallets/signing | Coinbase CDP |
 | Chains | Solana, Base |
 | Tokens | USDC, USDT |
@@ -71,7 +78,12 @@ Docs used by maintainers:
 | `lib/cdp_balance.ts` | Reads Base/Solana balances |
 | `lib/cdp_transfers.ts` | Executes Base/Solana transfers |
 | `lib/solana.ts` | Solana RPC, SPL balances, SPL transfers |
-| `lib/idempotency.ts` | Stripe-style idempotency behavior |
+| `lib/redis.ts` | Upstash Redis REST client |
+| `lib/idempotency.ts` | Redis-backed Stripe-style idempotency behavior |
+| `lib/rate-limit.ts` | Redis-backed route throttling |
+| `lib/service-auth.ts` | Constant-time scoped service bearer-token checks |
+| `lib/webhook-security.ts` | Timestamped HMAC webhook signature verification |
+| `lib/deposit-verification.ts` | On-chain deposit transaction verification |
 | `lib/audit.ts` | Non-blocking audit logging |
 | `lib/geoip.ts` | Local MaxMind GeoIP lookup |
 | `lib/cors.ts` | Origin allowlist CORS helpers |
@@ -88,13 +100,24 @@ SUPABASE_URL=
 SUPABASE_ANON_KEY=
 SUPABASE_SECRET_KEY=
 
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+
 CDP_API_KEY_ID=
 CDP_API_KEY_SECRET=
 CDP_WALLET_SECRET=
 
 CORS_ALLOWED_ORIGINS=https://your-frontend.example
 
-PAYOUT_AUTH_TOKEN=
+PAYOUT_RUNNER_AUTH_TOKEN=
+TARGET_PAYOUT_AUTH_TOKEN=
+FIAT_PAYOUT_WEBHOOK_AUTH_TOKEN=
+RECOVERY_WORKER_AUTH_TOKEN=
+WALLET_LIST_AUTH_TOKEN=
+WEBHOOK_ADMIN_AUTH_TOKEN=
+HEALTHCHECK_AUTH_TOKEN=
+
+# HMAC signing secret used to verify timestamped CDP webhook payloads.
 CDP_WEBHOOK_SECRET=
 
 FEES_PAYER_WALLET=
@@ -106,11 +129,15 @@ Optional or chain-specific:
 
 ```bash
 SOLANA_RPC_URL=
+BASE_RPC_URL=
 USDC_MINT=
 USDT_MINT=
+
+IDEMPOTENCY_PROCESSING_TTL_SECONDS=900
+IDEMPOTENCY_COMPLETED_TTL_SECONDS=86400
 ```
 
-Do not expose `SUPABASE_SECRET_KEY`, CDP secrets, webhook secrets, payout tokens, fee payer wallets, or platform fee wallets to a browser/client.
+Do not expose `SUPABASE_SECRET_KEY`, Redis tokens, CDP secrets, webhook signing secrets, service tokens, fee payer wallets, or platform fee wallets to a browser/client.
 
 `SOLANA_RPC_URL` is optional because the app falls back to Solana mainnet RPC, but Solana RPC usage still exists. Coinbase CDP signs and sends transactions, while this app still uses Solana RPC to read SPL token accounts, create ATA instructions, and confirm transactions. CoinGecko is not used; stablecoin display values are derived directly from on-chain USDC/USDT balances.
 
@@ -143,25 +170,26 @@ User-authenticated routes expect a Supabase access token:
 Authorization: Bearer <supabase_access_token>
 ```
 
-Service routes use static server-to-server tokens.
+Service routes use scoped server-to-server bearer tokens. Do not reuse the same value across scopes in production.
 
 | Route | Purpose | Auth |
 | --- | --- | --- |
-| `POST /api/user/create` | Create/sync app user profile | Supabase JWT or callback body |
+| `POST /api/user/create` | Create/sync app user profile | Supabase JWT |
 | `GET /api/plans/fetch` | Fetch user's plans and wallets | Supabase JWT |
 | `POST /api/plans/create` | Create plan + CDP wallet | Supabase JWT + idempotency |
 | `POST /api/plans/update` | Update plan metadata | Supabase JWT |
 | `GET /api/plans/status` | Check if user has a plan | Supabase JWT |
 | `POST /api/plans/break` | Early exit plan, pay user and fee | Supabase JWT + idempotency |
-| `POST /api/plans/payout` | Execute recurring payout | `PAYOUT_AUTH_TOKEN` + idempotency |
-| `POST /api/plans/payout-target` | Execute target-plan payout | `PAYOUT_AUTH_TOKEN` + idempotency |
-| `POST /api/plans/fiat-payout-webhook` | Settle fiat payout with treasury transfer | `PAYOUT_AUTH_TOKEN` + idempotency |
+| `POST /api/plans/payout` | Execute recurring payout | `PAYOUT_RUNNER_AUTH_TOKEN` + idempotency |
+| `POST /api/plans/payout-target` | Execute target-plan payout | `TARGET_PAYOUT_AUTH_TOKEN` + idempotency |
+| `POST /api/plans/fiat-payout-webhook` | Settle fiat payout with treasury transfer | `FIAT_PAYOUT_WEBHOOK_AUTH_TOKEN` + idempotency |
 | `GET /api/wallets/fetch` | Fetch live on-chain wallet balances | Supabase JWT |
 | `POST /api/wallets/wallet-sweeper` | Query one live on-chain balance | Supabase JWT |
-| `POST /api/wallets/update-balance` | Deposit webhook processor | `CDP_WEBHOOK_SECRET` |
-| `GET /api/wallets/fetch-all` | Internal wallet address list | `x-custom-auth: PAYOUT_AUTH_TOKEN` |
+| `POST /api/wallets/update-balance` | Deposit webhook processor | Timestamped HMAC using `CDP_WEBHOOK_SECRET` |
+| `GET /api/wallets/fetch-all` | Internal wallet address list | `WALLET_LIST_AUTH_TOKEN` |
 | `POST /api/transactions/fetch` | Fetch wallet ledger history | Supabase JWT |
-| `GET /api/health` | Database + Solana RPC health | Public |
+| `GET /api/health` | Shallow public health | Public |
+| `GET /api/health/deep` | Database + Solana RPC health | `HEALTHCHECK_AUTH_TOKEN` |
 
 ## Main Flows
 
@@ -198,10 +226,11 @@ CDP wallet creation is external and cannot be rolled back by Postgres. The datab
 
 ```text
 CDP webhook -> POST /api/wallets/update-balance
-  -> verify webhook secret
+  -> verify timestamped HMAC signature over raw body
   -> parse one or many events
   -> insert tx hash/signature into processed_transactions
   -> find wallet by address
+  -> verify tx destination/token/amount on Solana or Base
   -> write credit row to transactions
   -> optionally check target-plan progress from live chain balance
 ```
@@ -212,7 +241,7 @@ The webhook logs deposits; it does not mutate wallet balances.
 
 ```text
 Scheduler -> POST /api/plans/payout
-  -> verify PAYOUT_AUTH_TOKEN
+  -> verify PAYOUT_RUNNER_AUTH_TOKEN
   -> load plan + wallet
   -> derive key payout:<plan_id>:<slot>
   -> claim idempotency key
@@ -228,7 +257,7 @@ Scheduler -> POST /api/plans/payout
 
 ```text
 Scheduler -> POST /api/plans/payout-target
-  -> verify PAYOUT_AUTH_TOKEN
+  -> verify TARGET_PAYOUT_AUTH_TOKEN
   -> load active target plan + wallet
   -> claim idempotency key payout-target:<plan_id>
   -> read full live on-chain balance
@@ -259,7 +288,7 @@ Client -> POST /api/plans/break
 
 ```text
 Fiat service -> POST /api/plans/fiat-payout-webhook
-  -> verify PAYOUT_AUTH_TOKEN
+  -> verify FIAT_PAYOUT_WEBHOOK_AUTH_TOKEN
   -> claim idempotency key fiat-payout:<fiat_transaction_id>
   -> transfer settlement tokens from user CDP wallet to treasury
   -> RPC record_fiat_payout()
@@ -269,7 +298,7 @@ Fiat service -> POST /api/plans/fiat-payout-webhook
 
 ## Idempotency
 
-Money routes use `lib/idempotency.ts` and the `idempotency_keys` table.
+Money routes use `lib/idempotency.ts` and Redis. Idempotency claims, in-flight locks, cached responses, and replay responses are handled with atomic Redis Lua scripts, not Supabase RPCs.
 
 Behavior:
 
@@ -290,45 +319,9 @@ Idempotent-Replayed: true
 
 ## Cron Jobs
 
-There are two separate scheduling concerns.
+There are two separate scheduling concerns. Idempotency and rate-limit cleanup do not need cron because Redis TTLs expire keys automatically.
 
-### 1. Database cron: idempotency cleanup
-
-This is already handled inside Supabase Postgres with `pg_cron`.
-
-Supabase Cron uses the `pg_cron` extension. Jobs are stored in `cron.job`; run history is stored in `cron.job_run_details`. A migration enabled a job named `idempotency-reaper`:
-
-```sql
-select public.reap_idempotency_keys();
-```
-
-Schedule:
-
-```cron
-*/15 * * * *
-```
-
-Meaning: every 15 minutes, Postgres deletes expired idempotency rows. This job does not call the Next.js app and has zero network dependency.
-
-Useful checks in Supabase SQL editor:
-
-```sql
-select jobid, jobname, schedule, command, active
-from cron.job
-where jobname = 'idempotency-reaper';
-```
-
-```sql
-select *
-from cron.job_run_details
-where jobid in (
-  select jobid from cron.job where jobname = 'idempotency-reaper'
-)
-order by start_time desc
-limit 20;
-```
-
-### 2. Payout cron: trigger payout endpoints
+### 1. Payout cron: trigger payout endpoints
 
 The payout scheduler is not implemented as code in this repo. The app exposes secure service endpoints that a scheduler must call:
 
@@ -341,7 +334,7 @@ Recurring payout request:
 
 ```bash
 curl -X POST "https://your-api.example/api/plans/payout" \
-  -H "Authorization: Bearer $PAYOUT_AUTH_TOKEN" \
+  -H "Authorization: Bearer $PAYOUT_RUNNER_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"plan_id":"<plan_uuid>"}'
 ```
@@ -350,7 +343,7 @@ Target payout request:
 
 ```bash
 curl -X POST "https://your-api.example/api/plans/payout-target" \
-  -H "Authorization: Bearer $PAYOUT_AUTH_TOKEN" \
+  -H "Authorization: Bearer $TARGET_PAYOUT_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"plan_id":"<plan_uuid>"}'
 ```
@@ -371,6 +364,37 @@ The endpoints derive deterministic idempotency keys, so a duplicated scheduler r
 - Target payout key: `payout-target:<plan_id>`
 
 If you want payouts fully inside Supabase scheduling, use Supabase Cron to run SQL that either calls an Edge Function/API over HTTP or invokes a database function that queues payout work. Do not put CDP secrets inside database SQL.
+
+### 2. Database cron: transfer recovery worker
+
+Supabase Cron also runs the transfer recovery worker every minute:
+
+```sql
+select public.process_transfer_recovery_jobs(25);
+```
+
+Schedule:
+
+```cron
+* * * * *
+```
+
+The worker is database-native and does not call CDP. It only completes Postgres persistence for transfers that already returned a transaction hash. This follows the production recovery-point pattern for non-transactional external side effects: never re-run an unknown money transfer; recover only from a known external result.
+
+Useful checks:
+
+```sql
+select jobid, jobname, schedule, command, active
+from cron.job
+where jobname = 'transfer-recovery-worker';
+```
+
+```sql
+select status, operation_type, attempt_count, last_error, created_at, updated_at
+from public.transfer_recovery_jobs
+order by created_at desc
+limit 50;
+```
 
 ## Realtime Wallet Updates
 
@@ -423,13 +447,63 @@ Local DB writes for money flows use Postgres RPCs so related DB mutations commit
 
 External transfers cannot be rolled back. The architecture handles this with idempotency, transaction-hash dedupe, and atomic persistence after successful transfer.
 
+## Transfer Recovery
+
+The recovery system covers the crash window after a CDP/on-chain transfer succeeds but before the API persists the local DB state.
+
+Research basis:
+
+- Next.js Route Handlers use standard Web Request/Response APIs and non-GET methods are not cached by default, so the manual worker endpoint is safe as a POST-only operational endpoint.
+- Supabase Cron is backed by `pg_cron`, stores jobs in `cron.job`, records runs in `cron.job_run_details`, and can run SQL functions directly with no network dependency.
+- The Coinbase CDP SDK exposes idempotency keys for transaction/signing requests, so outbound transfer helpers pass deterministic idempotency keys where the SDK supports them.
+
+Recovery flow:
+
+```text
+Before external transfer
+  -> insert/update transfer_recovery_jobs as external_started
+
+After CDP/on-chain returns tx hash
+  -> mark transfer_recovery_jobs as external_succeeded with tx details
+
+Then local DB phase
+  -> call record_recurring_payout / record_target_payout / record_plan_break / record_fiat_payout
+  -> mark recovery job completed
+
+If API dies or DB write fails after tx hash
+  -> Supabase Cron calls process_transfer_recovery_jobs()
+  -> worker replays only the DB phase from recorded tx data
+  -> Redis idempotency key is updated to a completed 200 response
+```
+
+Recovery objects:
+
+| Object | Purpose |
+| --- | --- |
+| `transfer_recovery_jobs` | Durable outbox/recovery table for money transfers |
+| `upsert_transfer_recovery_job` | Registers a money operation before external transfer |
+| `mark_transfer_recovery_external_succeeded` | Stores returned tx hashes and amounts |
+| `process_transfer_recovery_jobs` | Cron worker that completes DB persistence |
+| `POST /api/recovery/process` | Secured manual worker endpoint using `RECOVERY_WORKER_AUTH_TOKEN` |
+
+Manual worker trigger:
+
+```bash
+curl -X POST "https://your-api.example/api/recovery/process" \
+  -H "Authorization: Bearer $RECOVERY_WORKER_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"limit":25}'
+```
+
+If a process dies after marking `external_started` but before recording any tx hash, the worker marks the job `needs_manual_reconciliation`. It will not re-run the transfer because that could double-send funds. An operator must reconcile the CDP/on-chain state and either complete the DB record manually or confirm that no transfer happened.
+
 ## Security Notes
 
 - API routes use the Supabase service role key, so route-level ownership checks are critical.
 - Browser clients should only send Supabase access tokens, never service keys.
 - Service endpoints must only be called from trusted schedulers/workers.
-- Webhook endpoints should be upgraded to provider-native signature/HMAC verification if CDP exposes it for this integration.
-- A full recovery-point worker is still not implemented; if a process dies after an external transfer but before DB completion, manual reconciliation or a future completer is required.
+- Deposit webhooks require timestamped HMAC signatures and on-chain transaction verification before ledger insertion.
+- Recovery jobs with a known tx hash are completed automatically; jobs without a tx hash require manual reconciliation to avoid double-sending funds.
 
 ## Scripts
 
