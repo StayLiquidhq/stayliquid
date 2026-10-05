@@ -48,7 +48,7 @@ export async function prepareTransferRecoveryJob(params: PrepareTransferRecovery
     p_scope: params.scope,
     p_key: params.key,
     p_operation_type: params.operationType,
-    p_user_id: params.userId ?? null,
+    p_user_id: params.userId ?? undefined,
     p_plan_id: params.planId,
     p_wallet_id: params.walletId,
     p_chain: params.chain,

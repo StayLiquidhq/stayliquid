@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
 import { handleCorsPreflight, getCorsHeaders } from "@/lib/cors";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
+import { unauthorizedServiceResponse, verifyServiceToken } from "@/lib/service-auth";
 
 export async function OPTIONS(request: NextRequest) {
   return handleCorsPreflight(request);
@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
 
     if (rateLimited) return rateLimited;
 
-    if (!verifyServiceBearerToken(request, "WALLET_LIST_AUTH_TOKEN")) {
+    if (!verifyServiceToken(request)) {
       return unauthorizedServiceResponse("wallets/fetch-all", corsHeaders);
     }
 

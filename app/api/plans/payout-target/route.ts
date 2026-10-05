@@ -8,7 +8,7 @@ import { withIdempotency } from "@/lib/idempotency";
 import { recordAuditLog } from "@/lib/audit";
 import { logger } from "@/lib/logger";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
+import { unauthorizedServiceResponse, verifyServiceToken } from "@/lib/service-auth";
 import {
   completeTransferRecoveryJob,
   failTransferRecoveryJob,
@@ -46,7 +46,7 @@ export async function POST(request: NextRequest) {
 
     if (rateLimited) return rateLimited;
 
-    if (!verifyServiceBearerToken(request, "TARGET_PAYOUT_AUTH_TOKEN")) {
+    if (!verifyServiceToken(request)) {
       return unauthorizedServiceResponse("plans/payout-target", corsHeaders);
     }
 

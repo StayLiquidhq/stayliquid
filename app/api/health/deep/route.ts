@@ -4,7 +4,7 @@ import supabase from "@/utils/supabase";
 import { getSolanaConnection } from "@/lib/solana";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
+import { unauthorizedServiceResponse, verifyServiceToken } from "@/lib/service-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
 
   if (rateLimited) return rateLimited;
 
-  if (!verifyServiceBearerToken(request, "HEALTHCHECK_AUTH_TOKEN")) {
+  if (!verifyServiceToken(request)) {
     return unauthorizedServiceResponse("health/deep", corsHeaders);
   }
 

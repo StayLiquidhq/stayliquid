@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
 
-import { requireEnv } from "@/lib/env";
+import { optionalEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
 
 function constantTimeEquals(actual: string, expected: string): boolean {
@@ -24,11 +24,13 @@ export function getBearerToken(request: NextRequest): string | null {
   return authHeader.slice("Bearer ".length).trim();
 }
 
-export function verifyServiceBearerToken(request: NextRequest, envName: string): boolean {
+export function verifyServiceToken(request: NextRequest): boolean {
   const token = getBearerToken(request);
-  const expected = requireEnv(envName);
+  const expected = optionalEnv("SERVICE_AUTH_TOKEN");
 
-  return Boolean(token && constantTimeEquals(token, expected));
+  if (!token || !expected) return false;
+
+  return constantTimeEquals(token, expected);
 }
 
 export function unauthorizedServiceResponse(

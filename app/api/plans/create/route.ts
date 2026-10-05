@@ -60,6 +60,11 @@ const createPlanSchema = z.intersection(planSchema, payoutSchema).and(
   })
 );
 
+const createPlanResultSchema = z.object({
+  plan: z.object({ id: z.string() }).passthrough(),
+  wallet: z.object({ id: z.string(), address: z.string() }).passthrough(),
+});
+
 export async function POST(request: NextRequest) {
   const { isAllowed, headers: corsHeaders } = validateOrigin(request);
 
@@ -191,7 +196,9 @@ export async function POST(request: NextRequest) {
           p_wallet_address: wallet.address,
         });
 
-        if (createError || !data) {
+        const parsedResult = createPlanResultSchema.safeParse(data);
+
+        if (createError || !parsedResult.success) {
           logger.error(
             "Failed to persist plan and wallet",
             { module: "plans/create", userId: user.id },
@@ -209,7 +216,7 @@ export async function POST(request: NextRequest) {
         recordAuditLog({ userId: user.id, eventType: "plan_create", request });
 
         return NextResponse.json(
-          { plan: data.plan, wallet: data.wallet },
+          { plan: parsedResult.data.plan, wallet: parsedResult.data.wallet },
           { status: 201, headers: corsHeaders }
         );
       }

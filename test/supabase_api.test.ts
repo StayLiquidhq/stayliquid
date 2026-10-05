@@ -6,7 +6,7 @@ test("Supabase API: should query wallets table and parse typed records", async (
   const startTime = Date.now();
   const { data, error } = await supabase
     .from("wallets")
-    .select("id, address, plan_id, has_webhook, balance")
+    .select("id, address, plan_id, has_webhook")
     .limit(2);
 
   console.log("✔ [Supabase API Response] wallets query:", {

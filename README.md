@@ -84,6 +84,8 @@ Docs used by maintainers:
 | `lib/service-auth.ts` | Constant-time scoped service bearer-token checks |
 | `lib/webhook-security.ts` | Timestamped HMAC webhook signature verification |
 | `lib/deposit-verification.ts` | On-chain deposit transaction verification |
+| `lib/telegram.ts` | Telegram admin alerts (fiat payouts) |
+| `lib/telegram-bot.ts` | Telegram commands, callbacks, and payout alerts |
 | `lib/audit.ts` | Non-blocking audit logging |
 | `lib/geoip.ts` | Local MaxMind GeoIP lookup |
 | `lib/cors.ts` | Origin allowlist CORS helpers |
@@ -109,13 +111,10 @@ CDP_WALLET_SECRET=
 
 CORS_ALLOWED_ORIGINS=https://your-frontend.example
 
-PAYOUT_RUNNER_AUTH_TOKEN=
-TARGET_PAYOUT_AUTH_TOKEN=
-FIAT_PAYOUT_WEBHOOK_AUTH_TOKEN=
-RECOVERY_WORKER_AUTH_TOKEN=
-WALLET_LIST_AUTH_TOKEN=
-WEBHOOK_ADMIN_AUTH_TOKEN=
-HEALTHCHECK_AUTH_TOKEN=
+SERVICE_AUTH_TOKEN=
+
+TELEGRAM_ACCESS_TOKEN=
+TELEGRAM_ADMIN_CHAT_ID=
 
 # HMAC signing secret used to verify timestamped CDP webhook payloads.
 CDP_WEBHOOK_SECRET=
@@ -180,16 +179,19 @@ Service routes use scoped server-to-server bearer tokens. Do not reuse the same 
 | `POST /api/plans/update` | Update plan metadata | Supabase JWT |
 | `GET /api/plans/status` | Check if user has a plan | Supabase JWT |
 | `POST /api/plans/break` | Early exit plan, pay user and fee | Supabase JWT + idempotency |
-| `POST /api/plans/payout` | Execute recurring payout | `PAYOUT_RUNNER_AUTH_TOKEN` + idempotency |
-| `POST /api/plans/payout-target` | Execute target-plan payout | `TARGET_PAYOUT_AUTH_TOKEN` + idempotency |
-| `POST /api/plans/fiat-payout-webhook` | Settle fiat payout with treasury transfer | `FIAT_PAYOUT_WEBHOOK_AUTH_TOKEN` + idempotency |
+| `POST /api/plans/payout` | Execute recurring payout | `SERVICE_AUTH_TOKEN` + idempotency |
+| `POST /api/plans/payout-target` | Execute target-plan payout | `SERVICE_AUTH_TOKEN` + idempotency |
+| `POST /api/plans/fiat-payout-webhook` | Settle fiat payout with treasury transfer | `SERVICE_AUTH_TOKEN` + idempotency |
 | `GET /api/wallets/fetch` | Fetch live on-chain wallet balances | Supabase JWT |
 | `POST /api/wallets/wallet-sweeper` | Query one live on-chain balance | Supabase JWT |
 | `POST /api/wallets/update-balance` | Deposit webhook processor | Timestamped HMAC using `CDP_WEBHOOK_SECRET` |
-| `GET /api/wallets/fetch-all` | Internal wallet address list | `WALLET_LIST_AUTH_TOKEN` |
+| `GET /api/wallets/fetch-all` | Internal wallet address list | `SERVICE_AUTH_TOKEN` |
 | `POST /api/transactions/fetch` | Fetch wallet ledger history | Supabase JWT |
+| `GET /api/wallets/events` | Server-sent events stream of wallet/deposit events | Supabase JWT |
 | `GET /api/health` | Shallow public health | Public |
-| `GET /api/health/deep` | Database + Solana RPC health | `HEALTHCHECK_AUTH_TOKEN` |
+| `GET /api/health/deep` | Database + Solana RPC health | `SERVICE_AUTH_TOKEN` |
+| `POST /api/telegram/webhook` | Telegram updates (commands + buttons) | Telegram secret token header |
+| `POST /api/telegram/setup` | Register the Telegram webhook | `SERVICE_AUTH_TOKEN` |
 
 ## Main Flows
 
@@ -241,7 +243,7 @@ The webhook logs deposits; it does not mutate wallet balances.
 
 ```text
 Scheduler -> POST /api/plans/payout
-  -> verify PAYOUT_RUNNER_AUTH_TOKEN
+  -> verify SERVICE_AUTH_TOKEN
   -> load plan + wallet
   -> derive key payout:<plan_id>:<slot>
   -> claim idempotency key
@@ -257,7 +259,7 @@ Scheduler -> POST /api/plans/payout
 
 ```text
 Scheduler -> POST /api/plans/payout-target
-  -> verify TARGET_PAYOUT_AUTH_TOKEN
+  -> verify SERVICE_AUTH_TOKEN
   -> load active target plan + wallet
   -> claim idempotency key payout-target:<plan_id>
   -> read full live on-chain balance
@@ -288,13 +290,46 @@ Client -> POST /api/plans/break
 
 ```text
 Fiat service -> POST /api/plans/fiat-payout-webhook
-  -> verify FIAT_PAYOUT_WEBHOOK_AUTH_TOKEN
+  -> verify SERVICE_AUTH_TOKEN
   -> claim idempotency key fiat-payout:<fiat_transaction_id>
   -> transfer settlement tokens from user CDP wallet to treasury
+  -> send Telegram admin alert with bank + amount (manual fiat transfer)
   -> RPC record_fiat_payout()
        - insert debit ledger row
        - update plan status or payout schedule
 ```
+
+## Telegram Bot
+
+The fiat payout bot runs inside this backend (no separate service). Telegram sends updates to `POST /api/telegram/webhook`; auth is the `X-Telegram-Bot-Api-Secret-Token` header when `TELEGRAM_WEBHOOK_SECRET` is set.
+
+Register the webhook once (sends `{TELEGRAM_WEBHOOK_URL}/api/telegram/webhook` to Telegram):
+
+```bash
+curl -X POST "https://your-api.example/api/telegram/setup" \
+  -H "Authorization: Bearer $SERVICE_AUTH_TOKEN"
+```
+
+Commands:
+
+| Command | Purpose |
+| --- | --- |
+| `/start` | Show help |
+| `/subscribe <code>` | Subscribe a chat to fiat payout alerts (code = `VENDOR_SUBSCRIPTION_CODE`) |
+| `/unsubscribe` | Stop alerts for the chat |
+| `/total` | Total saved on the platform (net credits − debits) |
+
+Fiat payout alert flow:
+
+```text
+Fiat payout settled on-chain (funds -> platform fees wallet)
+  -> insert fiat_payouts row (status pending)
+  -> alert subscribed chats with an [Accept Payout] button
+  -> vendor taps Accept  -> accept_fiat_payout() -> [Mark as Paid] button
+  -> vendor taps Mark as Paid -> mark_payout_as_paid()
+```
+
+If no vendors are subscribed, alerts fall back to `TELEGRAM_ADMIN_CHAT_ID`.
 
 ## Idempotency
 
@@ -334,7 +369,7 @@ Recurring payout request:
 
 ```bash
 curl -X POST "https://your-api.example/api/plans/payout" \
-  -H "Authorization: Bearer $PAYOUT_RUNNER_AUTH_TOKEN" \
+  -H "Authorization: Bearer $SERVICE_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"plan_id":"<plan_uuid>"}'
 ```
@@ -343,7 +378,7 @@ Target payout request:
 
 ```bash
 curl -X POST "https://your-api.example/api/plans/payout-target" \
-  -H "Authorization: Bearer $TARGET_PAYOUT_AUTH_TOKEN" \
+  -H "Authorization: Bearer $SERVICE_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"plan_id":"<plan_uuid>"}'
 ```
@@ -396,42 +431,38 @@ order by created_at desc
 limit 50;
 ```
 
-## Realtime Wallet Updates
+## Wallet Event Push (SSE)
 
-The app uses Supabase Realtime instead of a custom Next.js WebSocket server.
+The frontend never talks to the database. Deposit/wallet updates are pushed from the backend over Server-Sent Events so the browser does not poll.
 
-When any row is inserted into `transactions`, a database trigger inserts a user-scoped row into `wallet_events`. Supabase Realtime broadcasts that row over its managed WebSocket connection. Frontends subscribe to their own events and re-fetch the affected wallet balance from the API.
+When any row is inserted into `transactions`, a database trigger inserts a user-scoped row into `wallet_events`. The backend's `GET /api/wallets/events` route authenticates the user with their Supabase JWT and streams that user's `wallet_events` rows over SSE. The frontend consumes the stream and re-fetches the affected wallet balance from `/api/wallets/fetch`.
 
 Database objects:
 
 | Object | Purpose |
 | --- | --- |
-| `wallet_events` | Per-user realtime event stream |
+| `wallet_events` | Per-user event stream table |
 | `transactions_wallet_event_after_insert` | Trigger after transaction insert |
 | `enqueue_wallet_transaction_event()` | Finds wallet owner and writes the event |
 
-Frontend subscription shape:
+Transport:
 
-```ts
-const channel = supabase
-  .channel("wallet-events")
-  .on(
-    "postgres_changes",
-    {
-      event: "INSERT",
-      schema: "public",
-      table: "wallet_events",
-      filter: `user_id=eq.${user.id}`,
-    },
-    async (payload) => {
-      const walletId = payload.new.wallet_id;
-      await refreshWalletBalance(walletId);
-    }
-  )
-  .subscribe();
+```text
+transactions insert
+  -> trigger -> wallet_events insert
+  -> GET /api/wallets/events (authenticated, server-side)
+  -> text/event-stream frames: event: wallet_event
+  -> frontend re-fetches live on-chain balance from /api/wallets/fetch
 ```
 
-RLS only allows authenticated users to select their own `wallet_events`, so connected users receive only their wallet updates.
+Tunable via env:
+
+```bash
+WALLET_EVENTS_POLL_MS=4000
+WALLET_EVENTS_HEARTBEAT_MS=15000
+```
+
+The browser only ever calls backend HTTP routes. Supabase Auth is used client-side for the session token; all DB reads/writes happen in the backend with the service key.
 
 ## Database Atomicity
 
@@ -484,13 +515,13 @@ Recovery objects:
 | `upsert_transfer_recovery_job` | Registers a money operation before external transfer |
 | `mark_transfer_recovery_external_succeeded` | Stores returned tx hashes and amounts |
 | `process_transfer_recovery_jobs` | Cron worker that completes DB persistence |
-| `POST /api/recovery/process` | Secured manual worker endpoint using `RECOVERY_WORKER_AUTH_TOKEN` |
+| `POST /api/recovery/process` | Secured manual worker endpoint using `SERVICE_AUTH_TOKEN` |
 
 Manual worker trigger:
 
 ```bash
 curl -X POST "https://your-api.example/api/recovery/process" \
-  -H "Authorization: Bearer $RECOVERY_WORKER_AUTH_TOKEN" \
+  -H "Authorization: Bearer $SERVICE_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"limit":25}'
 ```
@@ -500,6 +531,10 @@ If a process dies after marking `external_started` but before recording any tx h
 ## Security Notes
 
 - API routes use the Supabase service role key, so route-level ownership checks are critical.
+- The frontend and backend must point at the same Supabase project (same `SUPABASE_URL`/publishable key), or the backend cannot validate frontend-issued JWTs.
+- `lib/supabase/types.ts` is generated from the schema. Regenerate it after any migration.
+- The frontend has no direct database access. It uses Supabase Auth only for session tokens and calls backend HTTP/SSE routes for all data.
+- The `public` schema is locked to the secret/service key: `anon` and `authenticated` have no schema usage, no table/sequence grants, and no function execution. RLS stays enabled on every table as defense in depth.
 - Browser clients should only send Supabase access tokens, never service keys.
 - Service endpoints must only be called from trusted schedulers/workers.
 - Deposit webhooks require timestamped HMAC signatures and on-chain transaction verification before ledger insertion.

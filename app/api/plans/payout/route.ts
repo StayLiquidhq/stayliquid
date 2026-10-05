@@ -7,7 +7,7 @@ import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { withIdempotency } from "@/lib/idempotency";
 import { logger } from "@/lib/logger";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
+import { unauthorizedServiceResponse, verifyServiceToken } from "@/lib/service-auth";
 import {
   completeTransferRecoveryJob,
   failTransferRecoveryJob,
@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
 
     if (rateLimited) return rateLimited;
 
-    if (!verifyServiceBearerToken(request, "PAYOUT_RUNNER_AUTH_TOKEN")) {
+    if (!verifyServiceToken(request)) {
       return unauthorizedServiceResponse("plans/payout", corsHeaders);
     }
 
@@ -264,7 +264,7 @@ export async function POST(request: NextRequest) {
           p_currency: tokenSymbol,
           p_recipient: recipientAddress,
           p_last_payout_date: now.toISOString(),
-          p_next_payout_date: nextPayoutDateIso,
+          p_next_payout_date: nextPayoutDateIso ?? undefined,
           p_is_solana: chain === "solana",
         });
 

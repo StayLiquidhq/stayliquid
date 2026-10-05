@@ -3,7 +3,7 @@ import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { processTransferRecoveryJobs } from "@/lib/recovery";
 import { logger } from "@/lib/logger";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
+import { unauthorizedServiceResponse, verifyServiceToken } from "@/lib/service-auth";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
 
     if (rateLimited) return rateLimited;
 
-    if (!verifyServiceBearerToken(request, "RECOVERY_WORKER_AUTH_TOKEN")) {
+    if (!verifyServiceToken(request)) {
       return unauthorizedServiceResponse("recovery/process", corsHeaders);
     }
 

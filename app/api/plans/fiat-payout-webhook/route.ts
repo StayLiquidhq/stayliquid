@@ -8,7 +8,8 @@ import { withIdempotency } from "@/lib/idempotency";
 import { logger } from "@/lib/logger";
 import { getPlatformFeesWallet } from "@/lib/treasury";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
+import { unauthorizedServiceResponse, verifyServiceToken } from "@/lib/service-auth";
+import { notifyNewFiatPayout } from "@/lib/telegram-bot";
 import {
   completeTransferRecoveryJob,
   failTransferRecoveryJob,
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest) {
 
     if (rateLimited) return rateLimited;
 
-    if (!verifyServiceBearerToken(request, "FIAT_PAYOUT_WEBHOOK_AUTH_TOKEN")) {
+    if (!verifyServiceToken(request)) {
       return unauthorizedServiceResponse("plans/fiat-webhook", corsHeaders);
     }
 
@@ -88,7 +89,9 @@ export async function POST(request: NextRequest) {
 
         const { data: plan, error: planError } = await supabase
           .from("plans")
-          .select("plan_type, frequency, chain, token")
+          .select(
+            "name, plan_type, frequency, chain, token, bank_name, account_name, payout_account_number"
+          )
           .eq("id", plan_id)
           .single();
 
@@ -155,6 +158,19 @@ export async function POST(request: NextRequest) {
         }
 
         await markTransferRecoveryExternalSucceeded(recoveryScope, idempotencyKey, { tx });
+
+        await notifyNewFiatPayout({
+          planId: plan_id,
+          walletId: wallet_id,
+          amount,
+          token: tokenSymbol,
+          chain,
+          bankName: plan.bank_name,
+          accountNumber: plan.payout_account_number,
+          accountName: plan.account_name,
+          fiatTransactionId: fiat_transaction_id,
+          onchainTx: tx,
+        });
 
         const { error: recordError } = await supabase.rpc("record_fiat_payout", {
           p_plan_id: plan_id,

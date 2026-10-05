@@ -7,6 +7,8 @@ export type Json =
   | Json[]
 
 export type Database = {
+  // Allows to automatically instantiate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
     PostgrestVersion: "14.18"
   }
@@ -45,11 +47,93 @@ export type Database = {
         }
         Relationships: []
       }
+      fiat_payouts: {
+        Row: {
+          accepted_at: string | null
+          account_name: string | null
+          account_number: string | null
+          amount: number | null
+          bank_name: string | null
+          chain: string | null
+          created_at: string
+          fiat_transaction_id: string | null
+          id: string
+          message_details: Json | null
+          onchain_tx: string | null
+          paid_at: string | null
+          payout_amount: number | null
+          plan_id: string | null
+          status: string
+          token: string | null
+          updated_at: string
+          vendor_id: number | null
+          wallet_id: string | null
+        }
+        Insert: {
+          accepted_at?: string | null
+          account_name?: string | null
+          account_number?: string | null
+          amount?: number | null
+          bank_name?: string | null
+          chain?: string | null
+          created_at?: string
+          fiat_transaction_id?: string | null
+          id?: string
+          message_details?: Json | null
+          onchain_tx?: string | null
+          paid_at?: string | null
+          payout_amount?: number | null
+          plan_id?: string | null
+          status?: string
+          token?: string | null
+          updated_at?: string
+          vendor_id?: number | null
+          wallet_id?: string | null
+        }
+        Update: {
+          accepted_at?: string | null
+          account_name?: string | null
+          account_number?: string | null
+          amount?: number | null
+          bank_name?: string | null
+          chain?: string | null
+          created_at?: string
+          fiat_transaction_id?: string | null
+          id?: string
+          message_details?: Json | null
+          onchain_tx?: string | null
+          paid_at?: string | null
+          payout_amount?: number | null
+          plan_id?: string | null
+          status?: string
+          token?: string | null
+          updated_at?: string
+          vendor_id?: number | null
+          wallet_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fiat_payouts_plan_id_fkey"
+            columns: ["plan_id"]
+            isOneToOne: false
+            referencedRelation: "plans"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "fiat_payouts_wallet_id_fkey"
+            columns: ["wallet_id"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       plans: {
         Row: {
           account_name: string | null
           bank_code: string | null
           bank_name: string | null
+          chain: string | null
           created_at: string | null
           frequency: string | null
           id: string
@@ -67,7 +151,6 @@ export type Database = {
           target_amount: number | null
           target_date: string | null
           target_type: string | null
-          chain: string | null
           token: string | null
           updated_at: string | null
           user_id: string
@@ -76,6 +159,7 @@ export type Database = {
           account_name?: string | null
           bank_code?: string | null
           bank_name?: string | null
+          chain?: string | null
           created_at?: string | null
           frequency?: string | null
           id?: string
@@ -93,7 +177,6 @@ export type Database = {
           target_amount?: number | null
           target_date?: string | null
           target_type?: string | null
-          chain?: string | null
           token?: string | null
           updated_at?: string | null
           user_id: string
@@ -102,6 +185,7 @@ export type Database = {
           account_name?: string | null
           bank_code?: string | null
           bank_name?: string | null
+          chain?: string | null
           created_at?: string | null
           frequency?: string | null
           id?: string
@@ -119,7 +203,6 @@ export type Database = {
           target_amount?: number | null
           target_date?: string | null
           target_type?: string | null
-          chain?: string | null
           token?: string | null
           updated_at?: string | null
           user_id?: string
@@ -184,144 +267,6 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "transactions_wallet_id_fkey"
-            columns: ["wallet_id"]
-            isOneToOne: false
-            referencedRelation: "wallets"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      users: {
-        Row: {
-          auth_user_id: string | null
-          created_at: string | null
-          email: string
-          google_id: string | null
-          has_created_plan: boolean | null
-          id: string
-          name: string | null
-          picture: string | null
-          updated_at: string | null
-          username: string | null
-        }
-        Insert: {
-          auth_user_id?: string | null
-          created_at?: string | null
-          email: string
-          google_id?: string | null
-          has_created_plan?: boolean | null
-          id?: string
-          name?: string | null
-          picture?: string | null
-          updated_at?: string | null
-          username?: string | null
-        }
-        Update: {
-          auth_user_id?: string | null
-          created_at?: string | null
-          email?: string
-          google_id?: string | null
-          has_created_plan?: boolean | null
-          id?: string
-          name?: string | null
-          picture?: string | null
-          updated_at?: string | null
-          username?: string | null
-        }
-        Relationships: []
-      }
-      wallets: {
-        Row: {
-          address: string
-          balance: number
-          chain_type: string
-          created_at: string | null
-          has_webhook: boolean
-          id: string
-          last_synced_at: string | null
-          plan_id: string
-          updated_at: string | null
-        }
-        Insert: {
-          address: string
-          balance?: number
-          chain_type?: string
-          created_at?: string | null
-          has_webhook?: boolean
-          id?: string
-          last_synced_at?: string | null
-          plan_id: string
-          updated_at?: string | null
-        }
-        Update: {
-          address?: string
-          balance?: number
-          chain_type?: string
-          created_at?: string | null
-          has_webhook?: boolean
-          id?: string
-          last_synced_at?: string | null
-          plan_id?: string
-          updated_at?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "wallets_plan_id_fkey"
-            columns: ["plan_id"]
-            isOneToOne: false
-            referencedRelation: "plans"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      wallet_events: {
-        Row: {
-          created_at: string
-          event_type: string
-          id: string
-          payload: Json
-          plan_id: string
-          transaction_id: string
-          user_id: string
-          wallet_id: string
-        }
-        Insert: {
-          created_at?: string
-          event_type?: string
-          id?: string
-          payload?: Json
-          plan_id: string
-          transaction_id: string
-          user_id: string
-          wallet_id: string
-        }
-        Update: {
-          created_at?: string
-          event_type?: string
-          id?: string
-          payload?: Json
-          plan_id?: string
-          transaction_id?: string
-          user_id?: string
-          wallet_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "wallet_events_plan_id_fkey"
-            columns: ["plan_id"]
-            isOneToOne: false
-            referencedRelation: "plans"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "wallet_events_transaction_id_fkey"
-            columns: ["transaction_id"]
-            isOneToOne: false
-            referencedRelation: "transactions"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "wallet_events_wallet_id_fkey"
             columns: ["wallet_id"]
             isOneToOne: false
             referencedRelation: "wallets"
@@ -410,29 +355,207 @@ export type Database = {
           },
         ]
       }
+      users: {
+        Row: {
+          auth_user_id: string | null
+          created_at: string | null
+          email: string
+          google_id: string | null
+          has_created_plan: boolean | null
+          id: string
+          name: string | null
+          picture: string | null
+          updated_at: string | null
+          username: string | null
+        }
+        Insert: {
+          auth_user_id?: string | null
+          created_at?: string | null
+          email: string
+          google_id?: string | null
+          has_created_plan?: boolean | null
+          id?: string
+          name?: string | null
+          picture?: string | null
+          updated_at?: string | null
+          username?: string | null
+        }
+        Update: {
+          auth_user_id?: string | null
+          created_at?: string | null
+          email?: string
+          google_id?: string | null
+          has_created_plan?: boolean | null
+          id?: string
+          name?: string | null
+          picture?: string | null
+          updated_at?: string | null
+          username?: string | null
+        }
+        Relationships: []
+      }
+      vendors: {
+        Row: {
+          chat_id: number
+          created_at: string
+          first_name: string | null
+          id: string
+          last_name: string | null
+          user_id: number
+          username: string | null
+        }
+        Insert: {
+          chat_id: number
+          created_at?: string
+          first_name?: string | null
+          id?: string
+          last_name?: string | null
+          user_id: number
+          username?: string | null
+        }
+        Update: {
+          chat_id?: number
+          created_at?: string
+          first_name?: string | null
+          id?: string
+          last_name?: string | null
+          user_id?: number
+          username?: string | null
+        }
+        Relationships: []
+      }
+      wallet_events: {
+        Row: {
+          created_at: string
+          event_type: string
+          id: string
+          payload: Json
+          plan_id: string
+          transaction_id: string
+          user_id: string
+          wallet_id: string
+        }
+        Insert: {
+          created_at?: string
+          event_type?: string
+          id?: string
+          payload?: Json
+          plan_id: string
+          transaction_id: string
+          user_id: string
+          wallet_id: string
+        }
+        Update: {
+          created_at?: string
+          event_type?: string
+          id?: string
+          payload?: Json
+          plan_id?: string
+          transaction_id?: string
+          user_id?: string
+          wallet_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "wallet_events_plan_id_fkey"
+            columns: ["plan_id"]
+            isOneToOne: false
+            referencedRelation: "plans"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "wallet_events_transaction_id_fkey"
+            columns: ["transaction_id"]
+            isOneToOne: false
+            referencedRelation: "transactions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "wallet_events_wallet_id_fkey"
+            columns: ["wallet_id"]
+            isOneToOne: false
+            referencedRelation: "wallets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      wallets: {
+        Row: {
+          address: string
+          chain_type: string
+          created_at: string | null
+          has_webhook: boolean
+          id: string
+          plan_id: string
+          updated_at: string | null
+        }
+        Insert: {
+          address: string
+          chain_type?: string
+          created_at?: string | null
+          has_webhook?: boolean
+          id?: string
+          plan_id: string
+          updated_at?: string | null
+        }
+        Update: {
+          address?: string
+          chain_type?: string
+          created_at?: string | null
+          has_webhook?: boolean
+          id?: string
+          plan_id?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "wallets_plan_id_fkey"
+            columns: ["plan_id"]
+            isOneToOne: false
+            referencedRelation: "plans"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      break_savings_plan: {
-        Args: { p_new_balance?: number; p_plan_id: string }
-        Returns: undefined
+      accept_fiat_payout: {
+        Args: { p_payout_id: string; p_vendor_id: number }
+        Returns: Json
       }
-      complete_target_plan: {
-        Args: { p_new_balance?: number; p_plan_id: string }
+      complete_transfer_recovery_job: {
+        Args: { p_key: string; p_response: Json; p_scope: string }
         Returns: undefined
       }
       create_plan_and_wallet: {
+        Args: { p_plan: Json; p_user_id: string; p_wallet_address: string }
+        Returns: Json
+      }
+      fail_transfer_recovery_job: {
+        Args: { p_error: string; p_key: string; p_scope: string }
+        Returns: undefined
+      }
+      mark_payout_as_paid: {
         Args: {
-          p_plan: Json
-          p_user_id: string
-          p_wallet_address: string
+          p_payout_amount?: number
+          p_payout_id: string
+          p_vendor_id: number
         }
-        Returns: {
-          plan: Json
-          wallet: Json
-        }
+        Returns: undefined
+      }
+      mark_plan_broken: { Args: { p_plan_id: string }; Returns: undefined }
+      mark_plan_completed: { Args: { p_plan_id: string }; Returns: undefined }
+      mark_transfer_recovery_external_succeeded: {
+        Args: { p_key: string; p_result: Json; p_scope: string }
+        Returns: undefined
+      }
+      platform_total_saved: { Args: never; Returns: Json }
+      process_transfer_recovery_jobs: {
+        Args: { p_limit?: number }
+        Returns: number
       }
       record_fiat_payout: {
         Args: {
@@ -447,16 +570,24 @@ export type Database = {
         }
         Returns: undefined
       }
+      record_payout_success: {
+        Args: {
+          p_last_payout_date: string
+          p_next_payout_date: string
+          p_plan_id: string
+        }
+        Returns: undefined
+      }
       record_plan_break: {
         Args: {
-          p_currency: string
-          p_fee_amount: number
-          p_fee_tx: string | null
-          p_is_solana: boolean
-          p_payout_amount: number
+          p_currency?: string
+          p_fee_amount?: number
+          p_fee_tx?: string
+          p_is_solana?: boolean
+          p_payout_amount?: number
           p_payout_tx: string
           p_plan_id: string
-          p_recipient: string
+          p_recipient?: string
           p_wallet_id: string
         }
         Returns: undefined
@@ -465,9 +596,9 @@ export type Database = {
         Args: {
           p_amount: number
           p_currency: string
-          p_is_solana: boolean
+          p_is_solana?: boolean
           p_last_payout_date: string
-          p_next_payout_date: string | null
+          p_next_payout_date?: string
           p_plan_id: string
           p_recipient: string
           p_tx: string
@@ -487,82 +618,31 @@ export type Database = {
         }
         Returns: undefined
       }
-      mark_plan_broken: {
+      transfer_recovery_already_applied: {
         Args: {
-          p_plan_id: string
+          p_job: Database["public"]["Tables"]["transfer_recovery_jobs"]["Row"]
         }
-        Returns: undefined
+        Returns: boolean
       }
-      mark_plan_completed: {
+      transfer_recovery_response: {
         Args: {
-          p_plan_id: string
+          p_job: Database["public"]["Tables"]["transfer_recovery_jobs"]["Row"]
         }
-        Returns: undefined
-      }
-      process_payout_update: {
-        Args: {
-          p_last_payout_date: string
-          p_new_balance: number
-          p_next_payout_date: string
-          p_plan_id: string
-        }
-        Returns: undefined
+        Returns: Json
       }
       upsert_transfer_recovery_job: {
         Args: {
-          p_chain: string
+          p_chain?: string
           p_key: string
           p_operation_type: string
-          p_plan_id: string
-          p_request: Json
+          p_plan_id?: string
+          p_request?: Json
           p_scope: string
-          p_token: string
-          p_user_id: string | null
-          p_wallet_id: string
+          p_token?: string
+          p_user_id?: string
+          p_wallet_id?: string
         }
         Returns: string
-      }
-      mark_transfer_recovery_external_succeeded: {
-        Args: {
-          p_key: string
-          p_result: Json
-          p_scope: string
-        }
-        Returns: undefined
-      }
-      complete_transfer_recovery_job: {
-        Args: {
-          p_key: string
-          p_response: Json
-          p_scope: string
-        }
-        Returns: undefined
-      }
-      fail_transfer_recovery_job: {
-        Args: {
-          p_error: string
-          p_key: string
-          p_scope: string
-        }
-        Returns: undefined
-      }
-      process_transfer_recovery_jobs: {
-        Args: {
-          p_limit?: number
-        }
-        Returns: number
-      }
-      record_payout_success: {
-        Args: {
-          p_last_payout_date: string
-          p_next_payout_date?: string | null
-          p_plan_id: string
-        }
-        Returns: undefined
-      }
-      sync_wallet_balance: {
-        Args: { p_balance: number; p_wallet_address: string }
-        Returns: undefined
       }
     }
     Enums: {
@@ -573,3 +653,126 @@ export type Database = {
     }
   }
 }
+
+type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
+
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
+
+export type Tables<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    : never) = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+      Row: infer R
+    }
+    ? R
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])
+    ? (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
+        Row: infer R
+      }
+      ? R
+      : never
+    : never
+
+export type TablesInsert<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never) = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Insert: infer I
+    }
+    ? I
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Insert: infer I
+      }
+      ? I
+      : never
+    : never
+
+export type TablesUpdate<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never) = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Update: infer U
+    }
+    ? U
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Update: infer U
+      }
+      ? U
+      : never
+    : never
+
+export type Enums<
+  DefaultSchemaEnumNameOrOptions extends
+    | keyof DefaultSchema["Enums"]
+    | { schema: keyof DatabaseWithoutInternals },
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    : never) = never,
+> = DefaultSchemaEnumNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
+  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
+    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
+    : never
+
+export type CompositeTypes<
+  PublicCompositeTypeNameOrOptions extends
+    | keyof DefaultSchema["CompositeTypes"]
+    | { schema: keyof DatabaseWithoutInternals },
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    : never) = never,
+> = PublicCompositeTypeNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
+  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
+    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
+    : never
+
+export const Constants = {
+  public: {
+    Enums: {},
+  },
+} as const

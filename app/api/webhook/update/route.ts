@@ -3,7 +3,7 @@ import supabase from "@/utils/supabase";
 import { logger } from "@/lib/logger";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { unauthorizedServiceResponse, verifyServiceBearerToken } from "@/lib/service-auth";
+import { unauthorizedServiceResponse, verifyServiceToken } from "@/lib/service-auth";
 
 export async function OPTIONS(request: NextRequest) {
   return handleCorsPreflight(request);
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
 
     if (rateLimited) return rateLimited;
 
-    if (!verifyServiceBearerToken(request, "WEBHOOK_ADMIN_AUTH_TOKEN")) {
+    if (!verifyServiceToken(request)) {
       return unauthorizedServiceResponse("webhook/update", corsHeaders);
     }
 

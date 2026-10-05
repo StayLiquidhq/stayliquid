@@ -227,7 +227,7 @@ export async function POST(request: NextRequest) {
           p_plan_id: plan_id,
           p_wallet_id: wallet.id,
           p_payout_tx: result.payoutTx,
-          p_fee_tx: result.feeTx,
+          p_fee_tx: result.feeTx ?? undefined,
           p_payout_amount: result.payoutAmount,
           p_fee_amount: result.feeAmount,
           p_currency: tokenSymbol,
