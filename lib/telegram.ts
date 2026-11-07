@@ -23,7 +23,12 @@ type TelegramPayload = Record<string, Json | undefined>;
 
 const TelegramResponseSchema = z.object({
   ok: z.boolean(),
-  result: z.object({ message_id: z.number() }).optional(),
+  result: z.unknown().optional(),
+  description: z.string().optional(),
+});
+
+const TelegramMessageResultSchema = z.object({
+  message_id: z.number(),
 });
 
 export function escapeHtml(value: string): string {
@@ -34,7 +39,7 @@ export function escapeHtml(value: string): string {
 }
 
 function botMethodUrl(method: string): string | null {
-  const token = optionalEnv("TELEGRAM_ACCESS_TOKEN");
+  const token = optionalEnv("TELEGRAM_ACCESS_TOKEN") ?? optionalEnv("TELEGRAM_BOT_TOKEN");
 
   if (!token) return null;
 
@@ -74,7 +79,7 @@ async function callTelegram(method: string, payload: TelegramPayload): Promise<J
 }
 
 export function isTelegramConfigured(): boolean {
-  return Boolean(optionalEnv("TELEGRAM_ACCESS_TOKEN"));
+  return Boolean(optionalEnv("TELEGRAM_ACCESS_TOKEN") ?? optionalEnv("TELEGRAM_BOT_TOKEN"));
 }
 
 export function getTelegramAdminChatId(): string | null {
@@ -97,7 +102,13 @@ export async function sendTelegramMessage(
   const body = await callTelegram("sendMessage", payload);
   const parsed = TelegramResponseSchema.safeParse(body);
 
-  if (parsed.success && parsed.data.result) return parsed.data.result.message_id;
+  if (parsed.success && parsed.data.ok) {
+    const messageResult = TelegramMessageResultSchema.safeParse(parsed.data.result);
+
+    if (messageResult.success) {
+      return messageResult.data.message_id;
+    }
+  }
 
   return null;
 }
@@ -148,4 +159,15 @@ export async function setTelegramWebhook(url: string, secretToken?: string): Pro
   const parsed = TelegramResponseSchema.safeParse(body);
 
   return parsed.success && parsed.data.ok;
+}
+
+export async function deleteTelegramWebhook(): Promise<boolean> {
+  const body = await callTelegram("deleteWebhook", {});
+  const parsed = TelegramResponseSchema.safeParse(body);
+
+  return parsed.success && parsed.data.ok;
+}
+
+export async function getTelegramWebhookInfo(): Promise<Json | null> {
+  return await callTelegram("getWebhookInfo", {});
 }

@@ -3,4 +3,7 @@ export async function register(): Promise<void> {
 
   const { initGeoIp } = await import("@/lib/geoip");
   await initGeoIp();
+
+  const { startCronJobs } = await import("@/lib/cron");
+  startCronJobs();
 }

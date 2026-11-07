@@ -42,7 +42,7 @@ test("Supabase API: should query audit_logs table and parse typed records", asyn
   const startTime = Date.now();
   const { data, error } = await supabase
     .from("audit_logs")
-    .select("id, action, resource_type, ip_address")
+    .select("id, event_type, ip_address, user_agent")
     .limit(2);
 
   console.log("✔ [Supabase API Response] audit_logs query:", {

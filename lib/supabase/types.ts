@@ -14,6 +14,27 @@ export type Database = {
   }
   public: {
     Tables: {
+      alerts: {
+        Row: {
+          created_at: string | null
+          data: Json
+          id: number
+          processed: boolean | null
+        }
+        Insert: {
+          created_at?: string | null
+          data: Json
+          id?: number
+          processed?: boolean | null
+        }
+        Update: {
+          created_at?: string | null
+          data?: Json
+          id?: number
+          processed?: boolean | null
+        }
+        Relationships: []
+      }
       audit_logs: {
         Row: {
           created_at: string | null
@@ -393,6 +414,45 @@ export type Database = {
           username?: string | null
         }
         Relationships: []
+      }
+      vendor_transactions: {
+        Row: {
+          amount: number
+          created_at: string | null
+          id: string
+          payout_id: string
+          vendor_id: number
+        }
+        Insert: {
+          amount: number
+          created_at?: string | null
+          id?: string
+          payout_id: string
+          vendor_id: number
+        }
+        Update: {
+          amount?: number
+          created_at?: string | null
+          id?: string
+          payout_id?: string
+          vendor_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "vendor_transactions_payout_id_fkey"
+            columns: ["payout_id"]
+            isOneToOne: false
+            referencedRelation: "fiat_payouts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "vendor_transactions_vendor_id_fkey"
+            columns: ["vendor_id"]
+            isOneToOne: false
+            referencedRelation: "vendors"
+            referencedColumns: ["user_id"]
+          },
+        ]
       }
       vendors: {
         Row: {

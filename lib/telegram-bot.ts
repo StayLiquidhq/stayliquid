@@ -231,8 +231,13 @@ async function handleCommand(
   from: TelegramUser,
   text: string
 ): Promise<void> {
-  const parts = text.trim().split(/\s+/);
-  const command = parts[0].toLowerCase();
+  const trimmed = text.trim();
+
+  if (!trimmed.startsWith("/")) return;
+
+  const parts = trimmed.split(/\s+/);
+  const rawCommand = parts[0].toLowerCase();
+  const command = rawCommand.split("@")[0];
 
   switch (command) {
     case "/start":
@@ -299,7 +304,8 @@ async function handleMarkPaid(
   callbackId: string,
   from: TelegramUser,
   payoutId: string,
-  amountRaw: string | undefined
+  amountRaw: string | undefined,
+  message?: z.infer<typeof TelegramMessageSchema>
 ): Promise<void> {
   const amount = Number(amountRaw);
 
@@ -314,6 +320,15 @@ async function handleMarkPaid(
     await answerTelegramCallback(callbackId, "Could not mark as paid", true);
 
     return;
+  }
+
+  if (message) {
+    await editTelegramMessage(
+      message.chat.id,
+      message.message_id,
+      `${message.text ?? "Payout"}\n\n✅ Marked as paid`,
+      { parseMode: "HTML", inlineKeyboard: [] }
+    );
   }
 
   await sendTelegramMessage(from.id, "✅ Payout marked as paid.");
@@ -331,7 +346,7 @@ async function handleCallback(callback: z.infer<typeof TelegramCallbackSchema>):
   }
 
   if (action === "mark_paid" && payoutId) {
-    await handleMarkPaid(callback.id, callback.from, payoutId, amountRaw);
+    await handleMarkPaid(callback.id, callback.from, payoutId, amountRaw, callback.message);
 
     return;
   }

@@ -4,10 +4,36 @@ import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { optionalEnv } from "@/lib/env";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { unauthorizedServiceResponse, verifyServiceToken } from "@/lib/service-auth";
-import { setTelegramWebhook } from "@/lib/telegram";
+import { deleteTelegramWebhook, getTelegramWebhookInfo, setTelegramWebhook } from "@/lib/telegram";
 
 export async function OPTIONS(request: NextRequest) {
   return handleCorsPreflight(request);
+}
+
+export async function GET(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
+  if (!verifyServiceToken(request)) {
+    return unauthorizedServiceResponse("telegram/setup", corsHeaders);
+  }
+
+  const info = await getTelegramWebhookInfo();
+
+  return NextResponse.json({ info }, { headers: corsHeaders });
+}
+
+export async function DELETE(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const corsHeaders = getCorsHeaders(origin);
+
+  if (!verifyServiceToken(request)) {
+    return unauthorizedServiceResponse("telegram/setup", corsHeaders);
+  }
+
+  const ok = await deleteTelegramWebhook();
+
+  return NextResponse.json({ ok }, { headers: corsHeaders });
 }
 
 export async function POST(request: NextRequest) {
