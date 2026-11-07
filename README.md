@@ -78,7 +78,7 @@ Docs used by maintainers:
 | `lib/cdp_balance.ts` | Reads Base/Solana balances |
 | `lib/cdp_transfers.ts` | Executes Base/Solana transfers |
 | `lib/solana.ts` | Solana RPC, SPL balances, SPL transfers |
-| `lib/redis.ts` | Upstash Redis REST client |
+| `lib/redis.ts` | Standard Redis client (ioredis) with in-memory fallback |
 | `lib/idempotency.ts` | Redis-backed Stripe-style idempotency behavior |
 | `lib/rate-limit.ts` | Redis-backed route throttling |
 | `lib/service-auth.ts` | Constant-time scoped service bearer-token checks |
@@ -102,8 +102,7 @@ SUPABASE_URL=
 SUPABASE_ANON_KEY=
 SUPABASE_SECRET_KEY=
 
-UPSTASH_REDIS_REST_URL=
-UPSTASH_REDIS_REST_TOKEN=
+REDIS_URL=
 
 CDP_API_KEY_ID=
 CDP_API_KEY_SECRET=
