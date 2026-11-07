@@ -53,7 +53,7 @@ Core principle: balances are not trusted from the database. Wallet balances are 
 | Runtime | Node.js route handlers |
 | Auth | Supabase Auth |
 | Database | Supabase Postgres |
-| Hot-path state | Redis via Upstash REST |
+| Hot-path state | Standard TCP Redis (ioredis) with in-memory fallback |
 | Wallets/signing | Coinbase CDP |
 | Chains | Solana, Base |
 | Tokens | USDC, USDT |
@@ -115,7 +115,7 @@ SERVICE_AUTH_TOKEN=
 TELEGRAM_ACCESS_TOKEN=
 VENDOR_SUBSCRIPTION_CODE=
 
-# HMAC signing secret used to verify timestamped CDP webhook payloads.
+# CDP Webhook authentication (Bearer token via Custom Header or optional HMAC secret)
 CDP_WEBHOOK_SECRET=
 
 SOLANA_PLATFORM_FEES_WALLET=
@@ -134,7 +134,7 @@ IDEMPOTENCY_PROCESSING_TTL_SECONDS=900
 IDEMPOTENCY_COMPLETED_TTL_SECONDS=86400
 ```
 
-Do not expose `SUPABASE_SECRET_KEY`, Redis tokens, CDP secrets, webhook signing secrets, service tokens, fee payer wallets, or platform fee wallets to a browser/client.
+Do not expose `SUPABASE_SECRET_KEY`, Redis credentials, CDP secrets, webhook signing secrets, service tokens, or platform fee wallets to a browser/client.
 
 `SOLANA_RPC_URL` is optional because the app falls back to Solana mainnet RPC, but Solana RPC usage still exists. Coinbase CDP signs and sends transactions, while this app still uses Solana RPC to read SPL token accounts, create ATA instructions, and confirm transactions. CoinGecko is not used; stablecoin display values are derived directly from on-chain USDC/USDT balances.
 
