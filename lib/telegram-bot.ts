@@ -7,7 +7,6 @@ import {
   answerTelegramCallback,
   editTelegramMessage,
   escapeHtml,
-  getTelegramAdminChatId,
   sendTelegramMessage,
 } from "@/lib/telegram";
 
@@ -421,15 +420,8 @@ export async function notifyNewFiatPayout(details: NewFiatPayoutDetails): Promis
     ? parsedVendors.data.map((vendor) => vendor.chat_id)
     : [];
 
-  const adminChat = getTelegramAdminChatId();
-  const adminNumeric = adminChat ? Number(adminChat) : Number.NaN;
-
-  if (chatIds.length === 0 && Number.isFinite(adminNumeric)) {
-    chatIds.push(adminNumeric);
-  }
-
   if (chatIds.length === 0) {
-    logger.warn("No Telegram recipients for fiat payout alert", { module: "telegram-bot" });
+    logger.warn("No subscribed vendors found for fiat payout alert", { module: "telegram-bot" });
 
     return;
   }

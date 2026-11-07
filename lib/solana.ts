@@ -13,7 +13,6 @@ import {
 } from "@solana/spl-token";
 import cdp from "@/utils/cdp";
 import { logger } from "./logger";
-import { getFeesPayerWallet } from "./treasury";
 
 export interface RpcErrorDetails {
   status?: number;
@@ -288,7 +287,6 @@ export async function transferSplFromCdpWallet({
   const connection = getSolanaConnection("confirmed");
   const sender = new PublicKey(senderWalletAddress);
   const recipient = new PublicKey(recipientAddress);
-  const feePayer = new PublicKey(getFeesPayerWallet());
 
   const senderTokenAccount = await getAssociatedTokenAddress(mint, sender);
   const recipientTokenAccount = await getAssociatedTokenAddress(mint, recipient);
@@ -306,7 +304,7 @@ export async function transferSplFromCdpWallet({
     });
     tx.add(
       createAssociatedTokenAccountInstruction(
-        feePayer,
+        sender,
         recipientTokenAccount,
         recipient,
         mint
@@ -324,7 +322,8 @@ export async function transferSplFromCdpWallet({
     )
   );
 
-  tx.feePayer = feePayer;
+  // User wallet pays its own transaction fee (no platform sponsorship)
+  tx.feePayer = sender;
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
   tx.recentBlockhash = blockhash;
 
@@ -338,13 +337,7 @@ export async function transferSplFromCdpWallet({
     idempotencyKey: idempotencyKey ? `${idempotencyKey}:sender-sign` : undefined,
   });
 
-  const feePayerSignedResponse = await cdp.solana.signTransaction({
-    address: feePayer.toBase58(),
-    transaction: senderSignedResponse.signature,
-    idempotencyKey: idempotencyKey ? `${idempotencyKey}:fee-payer-sign` : undefined,
-  });
-
-  const rawTx = Buffer.from(feePayerSignedResponse.signature, "base64");
+  const rawTx = Buffer.from(senderSignedResponse.signature, "base64");
 
   const signature = await connection.sendRawTransaction(rawTx, {
     skipPreflight: false,
@@ -436,7 +429,6 @@ export async function breakPlanFromCdpWallet({
   const sender = new PublicKey(senderWalletAddress);
   const recipient = new PublicKey(recipientAddress);
   const treasury = new PublicKey(treasuryAddress);
-  const feePayer = new PublicKey(getFeesPayerWallet());
 
   const senderTokenAccount = await getAssociatedTokenAddress(mint, sender);
   const recipientTokenAccount = await getAssociatedTokenAddress(mint, recipient);
@@ -450,7 +442,7 @@ export async function breakPlanFromCdpWallet({
   if (!recipientInfo) {
     tx.add(
       createAssociatedTokenAccountInstruction(
-        feePayer,
+        sender,
         recipientTokenAccount,
         recipient,
         mint
@@ -463,7 +455,7 @@ export async function breakPlanFromCdpWallet({
   if (!treasuryInfo) {
     tx.add(
       createAssociatedTokenAccountInstruction(
-        feePayer,
+        sender,
         treasuryTokenAccount,
         treasury,
         mint
@@ -491,7 +483,8 @@ export async function breakPlanFromCdpWallet({
     );
   }
 
-  tx.feePayer = feePayer;
+  // User wallet pays its own transaction fee (no platform sponsorship)
+  tx.feePayer = sender;
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
   tx.recentBlockhash = blockhash;
 
@@ -504,12 +497,7 @@ export async function breakPlanFromCdpWallet({
     transaction: serializedTx,
   });
 
-  const feePayerSigned = await cdp.solana.signTransaction({
-    address: feePayer.toBase58(),
-    transaction: senderSigned.signature,
-  });
-
-  const rawTx = Buffer.from(feePayerSigned.signature, "base64");
+  const rawTx = Buffer.from(senderSigned.signature, "base64");
 
   const signature = await connection.sendRawTransaction(rawTx, {
     skipPreflight: false,

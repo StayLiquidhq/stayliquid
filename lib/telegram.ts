@@ -82,10 +82,6 @@ export function isTelegramConfigured(): boolean {
   return Boolean(optionalEnv("TELEGRAM_ACCESS_TOKEN") ?? optionalEnv("TELEGRAM_BOT_TOKEN"));
 }
 
-export function getTelegramAdminChatId(): string | null {
-  return optionalEnv("TELEGRAM_ADMIN_CHAT_ID");
-}
-
 export async function sendTelegramMessage(
   chatId: number | string,
   text: string,

@@ -656,6 +656,8 @@ export type Database = {
         Args: {
           p_amount: number
           p_currency: string
+          p_fee_amount?: number
+          p_fee_tx?: string
           p_is_solana?: boolean
           p_last_payout_date: string
           p_next_payout_date?: string
@@ -670,6 +672,8 @@ export type Database = {
         Args: {
           p_amount: number
           p_currency: string
+          p_fee_amount?: number
+          p_fee_tx?: string
           p_is_solana: boolean
           p_plan_id: string
           p_recipient: string

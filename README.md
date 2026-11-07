@@ -84,7 +84,7 @@ Docs used by maintainers:
 | `lib/service-auth.ts` | Constant-time scoped service bearer-token checks |
 | `lib/webhook-security.ts` | Timestamped HMAC webhook signature verification |
 | `lib/deposit-verification.ts` | On-chain deposit transaction verification |
-| `lib/telegram.ts` | Telegram admin alerts (fiat payouts) |
+| `lib/telegram.ts` | Telegram vendor alerts (fiat payouts) |
 | `lib/telegram-bot.ts` | Telegram commands, callbacks, and payout alerts |
 | `lib/audit.ts` | Non-blocking audit logging |
 | `lib/geoip.ts` | Local MaxMind GeoIP lookup |
@@ -114,12 +114,11 @@ CORS_ALLOWED_ORIGINS=https://your-frontend.example
 SERVICE_AUTH_TOKEN=
 
 TELEGRAM_ACCESS_TOKEN=
-TELEGRAM_ADMIN_CHAT_ID=
+VENDOR_SUBSCRIPTION_CODE=
 
 # HMAC signing secret used to verify timestamped CDP webhook payloads.
 CDP_WEBHOOK_SECRET=
 
-FEES_PAYER_WALLET=
 SOLANA_PLATFORM_FEES_WALLET=
 BASE_PLATFORM_FEES_WALLET=
 ```
@@ -293,7 +292,7 @@ Fiat service -> POST /api/plans/fiat-payout-webhook
   -> verify SERVICE_AUTH_TOKEN
   -> claim idempotency key fiat-payout:<fiat_transaction_id>
   -> transfer settlement tokens from user CDP wallet to treasury
-  -> send Telegram admin alert with bank + amount (manual fiat transfer)
+  -> send Telegram vendor alert with bank + amount (manual fiat transfer)
   -> RPC record_fiat_payout()
        - insert debit ledger row
        - update plan status or payout schedule
@@ -329,7 +328,7 @@ Fiat payout settled on-chain (funds -> platform fees wallet)
   -> vendor taps Mark as Paid -> mark_payout_as_paid()
 ```
 
-If no vendors are subscribed, alerts fall back to `TELEGRAM_ADMIN_CHAT_ID`.
+Alerts are dispatched exclusively to authorized vendors subscribed via `/subscribe <code>`.
 
 ## Idempotency
 

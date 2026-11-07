@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import supabase from "@/utils/supabase";
 import { getOnChainTokenBalance } from "@/lib/cdp_balance";
-import { executeDirectTransfer } from "@/lib/cdp_transfers";
+import { executeSplitPayout } from "@/lib/cdp_transfers";
+import { getPlatformFeesWallet } from "@/lib/treasury";
 import { parseChainWithFallback, parseTokenWithFallback } from "@/lib/tokens";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { withIdempotency } from "@/lib/idempotency";
@@ -186,52 +187,66 @@ export async function POST(request: NextRequest) {
           request: recoveryRequest,
         });
 
-        logger.info("Executing target payout directly from user Coinbase wallet", {
+        const feeTreasury = getPlatformFeesWallet(chain);
+
+        logger.info("Executing target split payout directly from user Coinbase wallet", {
           module: "plans/payout-target",
           planId: plan_id,
           senderWalletAddress: wallet.address,
           recipientAddress,
+          feeTreasury,
           payoutAmount: liveOnChainBalance,
           chain,
           token: tokenSymbol,
         });
 
-        let tx: string;
+        let result: Awaited<ReturnType<typeof executeSplitPayout>>;
 
         try {
-          const result = await executeDirectTransfer({
+          result = await executeSplitPayout({
             senderWalletAddress: wallet.address,
             recipientAddress,
-            amount: liveOnChainBalance,
+            feeTreasuryAddress: feeTreasury,
+            totalAmount: liveOnChainBalance,
+            feePercent: 0.05,
             chain,
             token: tokenSymbol,
             idempotencyKey,
           });
-
-          tx = result.tx;
         } catch (error) {
           const errorObj = error instanceof Error ? error : new Error(String(error));
           await failTransferRecoveryJob(recoveryScope, idempotencyKey, errorObj.message);
           throw errorObj;
         }
 
-        await markTransferRecoveryExternalSucceeded(recoveryScope, idempotencyKey, { tx });
+        await markTransferRecoveryExternalSucceeded(recoveryScope, idempotencyKey, {
+          payoutTx: result.payoutTx,
+          feeTx: result.feeTx,
+          payoutAmount: result.payoutAmount,
+          feeAmount: result.feeAmount,
+        });
 
         const { error: recordError } = await supabase.rpc("record_target_payout", {
           p_plan_id: plan_id,
           p_wallet_id: wallet.id,
-          p_tx: tx,
-          p_amount: liveOnChainBalance,
+          p_tx: result.payoutTx,
+          p_amount: result.payoutAmount,
           p_currency: tokenSymbol,
           p_recipient: recipientAddress,
           p_is_solana: chain === "solana",
+          p_fee_tx: result.feeTx ?? undefined,
+          p_fee_amount: result.feeAmount,
         });
 
         const responseBody = {
           success: true,
-          signature: tx,
-          txHash: tx,
-          payoutAmount: liveOnChainBalance,
+          payoutTx: result.payoutTx,
+          feeTx: result.feeTx,
+          signature: result.payoutTx,
+          txHash: result.payoutTx,
+          totalAmount: liveOnChainBalance,
+          payoutAmount: result.payoutAmount,
+          feeAmount: result.feeAmount,
           chain,
           token: tokenSymbol,
         };
@@ -240,7 +255,7 @@ export async function POST(request: NextRequest) {
           logger.error("Failed to persist target payout records", {
             module: "plans/payout-target",
             planId: plan_id,
-            tx,
+            tx: result.payoutTx,
           }, recordError);
 
           return NextResponse.json(
