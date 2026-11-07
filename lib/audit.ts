@@ -54,7 +54,7 @@ export function recordAuditLog(params: RecordAuditParams): void {
       .digest("hex");
   }
 
-  after(async () => {
+  const runAsync = async () => {
     try {
       const location = resolveIpLocation(ipAddress);
 
@@ -91,5 +91,11 @@ export function recordAuditLog(params: RecordAuditParams): void {
         eventType: params.eventType,
       }, errorObj);
     }
-  });
+  };
+
+  try {
+    after(runAsync);
+  } catch {
+    void runAsync();
+  }
 }

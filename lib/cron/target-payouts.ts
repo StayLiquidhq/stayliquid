@@ -1,6 +1,6 @@
 import supabase from "@/utils/supabase";
-import { optionalEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
+import { executeTargetPayoutForPlan } from "@/lib/payout-service";
 import {
   type PlanRow,
   type PlanWithWallets,
@@ -125,47 +125,19 @@ async function sendFiatTargetPayoutRequest(plan: PlanRow): Promise<void> {
   });
 }
 
-function resolveTargetPayoutUrl(): string {
-  const explicit = optionalEnv("PAYOUT_TARGET_ENDPOINT_URL") ?? optionalEnv("PAYOUT_ENDPOINT_URL");
+async function executeCryptoTargetPayout(plan: PlanRow): Promise<void> {
+  const result = await executeTargetPayoutForPlan(plan.id);
 
-  if (explicit) return explicit;
-
-  const base = optionalEnv("TELEGRAM_WEBHOOK_URL") ?? optionalEnv("NEXT_PUBLIC_BASE_URL");
-
-  if (base) return `${base.replace(/\/$/, "")}/api/plans/payout-target`;
-
-  const port = process.env.PORT || "8080";
-
-  return `http://127.0.0.1:${port}/api/plans/payout-target`;
-}
-
-async function sendCryptoTargetPayoutRequest(plan: PlanRow): Promise<void> {
-  const url = resolveTargetPayoutUrl();
-  const token = optionalEnv("PAYOUT_AUTH_TOKEN") ?? optionalEnv("SERVICE_AUTH_TOKEN");
-
-  if (!token) {
-    throw new Error("Missing required crypto payout configuration (PAYOUT_AUTH_TOKEN or SERVICE_AUTH_TOKEN)");
+  if (!result.success) {
+    throw new Error(result.error ?? "Crypto target payout failed");
   }
 
-  const payload = { plan_id: plan.id };
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Crypto payout request failed (${response.status} ${response.statusText}): ${errorBody}`);
-  }
-
-  logger.info("Successfully dispatched crypto payout request for target plan", {
+  logger.info("Successfully executed crypto payout for target plan", {
     module: "cron/target",
     planId: plan.id,
+    txHash: result.txHash,
+    payoutAmount: result.payoutAmount,
+    feeAmount: result.feeAmount,
   });
 }
 
@@ -179,7 +151,7 @@ export async function processTargetPlans(plans: PlanRow[]): Promise<ProcessSumma
         results.successful++;
         results.details.push({ planId: plan.id, type: "fiat", status: "success" });
       } else {
-        await sendCryptoTargetPayoutRequest(plan);
+        await executeCryptoTargetPayout(plan);
         results.successful++;
         results.details.push({ planId: plan.id, type: "crypto", status: "success" });
       }

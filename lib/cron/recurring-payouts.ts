@@ -1,6 +1,6 @@
 import supabase from "@/utils/supabase";
-import { optionalEnv } from "@/lib/env";
 import { logger } from "@/lib/logger";
+import { executeRecurringPayoutForPlan } from "@/lib/payout-service";
 import { advancePlanSchedule } from "./schedule";
 import {
   type PlanRow,
@@ -121,47 +121,20 @@ async function sendFiatRecurringPayoutRequest(plan: PlanRow): Promise<void> {
   });
 }
 
-function resolveRecurringPayoutUrl(): string {
-  const explicit = optionalEnv("PAYOUT_ENDPOINT_URL");
+async function executeCryptoRecurringPayout(plan: PlanRow): Promise<void> {
+  const result = await executeRecurringPayoutForPlan(plan.id);
 
-  if (explicit) return explicit;
-
-  const base = optionalEnv("TELEGRAM_WEBHOOK_URL") ?? optionalEnv("NEXT_PUBLIC_BASE_URL");
-
-  if (base) return `${base.replace(/\/$/, "")}/api/plans/payout`;
-
-  const port = process.env.PORT || "8080";
-
-  return `http://127.0.0.1:${port}/api/plans/payout`;
-}
-
-async function sendCryptoRecurringPayoutRequest(plan: PlanRow): Promise<void> {
-  const url = resolveRecurringPayoutUrl();
-  const token = optionalEnv("PAYOUT_AUTH_TOKEN") ?? optionalEnv("SERVICE_AUTH_TOKEN");
-
-  if (!token) {
-    throw new Error("Missing required crypto payout configuration (PAYOUT_AUTH_TOKEN or SERVICE_AUTH_TOKEN)");
+  if (!result.success) {
+    throw new Error(result.error ?? "Crypto recurring payout failed");
   }
 
-  const payload = { plan_id: plan.id };
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Crypto recurring payout request failed (${response.status} ${response.statusText}): ${errorBody}`);
-  }
-
-  logger.info("Successfully dispatched crypto recurring payout request", {
+  logger.info("Successfully executed crypto payout for recurring plan", {
     module: "cron/recurring",
     planId: plan.id,
+    txHash: result.txHash,
+    payoutAmount: result.payoutAmount,
+    feeAmount: result.feeAmount,
+    nextPayoutDate: result.next_payout_date,
   });
 }
 
@@ -176,8 +149,7 @@ export async function processRecurringPlans(plans: PlanRow[]): Promise<ProcessSu
         results.successful++;
         results.details.push({ planId: plan.id, type: "fiat", status: "success" });
       } else {
-        await sendCryptoRecurringPayoutRequest(plan);
-        await advancePlanSchedule(plan);
+        await executeCryptoRecurringPayout(plan);
         results.successful++;
         results.details.push({ planId: plan.id, type: "crypto", status: "success" });
       }
