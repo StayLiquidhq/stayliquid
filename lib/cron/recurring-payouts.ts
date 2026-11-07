@@ -121,12 +121,26 @@ async function sendFiatRecurringPayoutRequest(plan: PlanRow): Promise<void> {
   });
 }
 
+function resolveRecurringPayoutUrl(): string {
+  const explicit = optionalEnv("PAYOUT_ENDPOINT_URL");
+
+  if (explicit) return explicit;
+
+  const base = optionalEnv("TELEGRAM_WEBHOOK_URL") ?? optionalEnv("NEXT_PUBLIC_BASE_URL");
+
+  if (base) return `${base.replace(/\/$/, "")}/api/plans/payout`;
+
+  const port = process.env.PORT || "8080";
+
+  return `http://127.0.0.1:${port}/api/plans/payout`;
+}
+
 async function sendCryptoRecurringPayoutRequest(plan: PlanRow): Promise<void> {
-  const url = optionalEnv("PAYOUT_ENDPOINT_URL");
+  const url = resolveRecurringPayoutUrl();
   const token = optionalEnv("PAYOUT_AUTH_TOKEN") ?? optionalEnv("SERVICE_AUTH_TOKEN");
 
-  if (!url || !token) {
-    throw new Error("Missing required crypto payout configuration (PAYOUT_ENDPOINT_URL or token)");
+  if (!token) {
+    throw new Error("Missing required crypto payout configuration (PAYOUT_AUTH_TOKEN or SERVICE_AUTH_TOKEN)");
   }
 
   const payload = { plan_id: plan.id };
