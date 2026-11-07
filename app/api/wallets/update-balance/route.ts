@@ -5,9 +5,10 @@ import { getOnChainTokenBalance } from "@/lib/cdp_balance";
 import { isSupportedChain, isSupportedToken, SupportedChain, SupportedToken } from "@/lib/tokens";
 import { getCorsHeaders, handleCorsPreflight } from "@/lib/cors";
 import { logger } from "@/lib/logger";
-import { requireEnv } from "@/lib/env";
+import { optionalEnv } from "@/lib/env";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { verifySignedWebhook } from "@/lib/webhook-security";
+import { verifyServiceToken } from "@/lib/service-auth";
 import { verifyDepositTransaction } from "@/lib/deposit-verification";
 
 import { z } from "zod";
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest) {
   const corsHeaders = getCorsHeaders(origin);
 
   try {
-    const webhookSecret = requireEnv("CDP_WEBHOOK_SECRET");
+    const webhookSecret = optionalEnv("CDP_WEBHOOK_SECRET");
     const rawBody = await request.text();
 
     const rateLimited = await enforceRateLimit(request, {
@@ -49,11 +50,19 @@ export async function POST(request: NextRequest) {
 
     if (rateLimited) return rateLimited;
 
-    if (!verifySignedWebhook(request, rawBody, webhookSecret)) {
-      logger.warn("Invalid CDP webhook signature", { module: "webhook/deposit" });
+    const isAuthorizedByServiceToken = verifyServiceToken(request);
+
+    const isAuthorizedBySignature =
+      !!webhookSecret && verifySignedWebhook(request, rawBody, webhookSecret);
+
+    if (!isAuthorizedByServiceToken && !isAuthorizedBySignature) {
+      logger.warn(
+        "Unauthorized CDP webhook request (missing valid service bearer token or HMAC signature)",
+        { module: "webhook/deposit" }
+      );
 
       return NextResponse.json(
-        { error: "Invalid webhook signature" },
+        { error: "Unauthorized webhook request" },
         { status: 401, headers: corsHeaders }
       );
     }
